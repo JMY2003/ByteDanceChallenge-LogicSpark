@@ -1,0 +1,2 @@
+"""CompeteScope AI backend package."""
+
