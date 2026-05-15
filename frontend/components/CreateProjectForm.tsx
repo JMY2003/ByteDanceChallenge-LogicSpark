@@ -2,8 +2,14 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Play, Sparkles } from "lucide-react";
+import { Play, Sparkles, Wand2 } from "lucide-react";
 import { createProject, runProject } from "@/lib/api";
+
+const examples = [
+  "请分析 AI 办公协作领域的竞品，包括 Notion AI、ClickUp AI、Coda AI、飞书、钉钉，并生成产品经理视角报告。",
+  "请分析网购协作领域的竞品，包括 京东、阿里巴巴、拼多多、唯品会等平台并生成产品经理视角报告。",
+  "分析 LangChain、LlamaIndex、Dify、Flowise、CrewAI、AutoGen 在 AI Agent 开发平台领域的竞争格局。"
+];
 
 export function CreateProjectForm() {
   const router = useRouter();
@@ -41,7 +47,22 @@ export function CreateProjectForm() {
   return (
     <form onSubmit={onSubmit} className="space-y-5">
       <div>
-        <label className="mb-2 block text-sm font-medium text-ink">分析任务</label>
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+          <label className="block text-sm font-medium text-ink">分析任务</label>
+          <div className="flex flex-wrap gap-2">
+            {examples.map((example, index) => (
+              <button
+                key={example}
+                type="button"
+                onClick={() => setQuery(example)}
+                className="inline-flex h-8 items-center gap-1 rounded-md border border-line bg-white px-2 text-xs font-medium text-steel hover:border-signal hover:text-signal"
+              >
+                <Wand2 size={13} />
+                样例 {index + 1}
+              </button>
+            ))}
+          </div>
+        </div>
         <textarea
           value={query}
           onChange={(event) => setQuery(event.target.value)}
@@ -82,7 +103,7 @@ export function CreateProjectForm() {
           <span className="pb-1 font-medium text-ink">启用深度审查</span>
         </label>
       </div>
-      {error ? <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-danger">{error}</div> : null}
+      {error ? <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm leading-6 text-danger">{error}</div> : null}
       <button
         type="submit"
         disabled={isSubmitting}
@@ -94,4 +115,3 @@ export function CreateProjectForm() {
     </form>
   );
 }
-

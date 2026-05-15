@@ -32,9 +32,10 @@ export default async function KnowledgePage({ params }: PageProps) {
                 </div>
                 <span className="rounded-full bg-panel px-2 py-1 text-xs text-steel">{competitor.product_category}</span>
               </div>
-              <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <div className="mt-4 grid gap-3 md:grid-cols-3">
                 <InfoBlock label="目标用户" value={competitor.target_users.join(", ") || "unknown"} />
                 <InfoBlock label="商业模式" value={competitor.business_model.join(", ") || "unknown"} />
+                <InfoBlock label="来源覆盖" value={(competitor.source_coverage ?? []).join(", ") || "unknown"} />
               </div>
               <div className="mt-4">
                 <div className="mb-2 text-sm font-semibold text-ink">功能信号</div>
@@ -45,6 +46,10 @@ export default async function KnowledgePage({ params }: PageProps) {
                     </span>
                   ))}
                 </div>
+              </div>
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <SwotColumn title="Strengths" items={competitor.swot?.strengths ?? []} />
+                <SwotColumn title="Risks" items={[...(competitor.swot?.weaknesses ?? []), ...(competitor.swot?.threats ?? [])]} />
               </div>
               <div className="mt-4">
                 <div className="mb-2 text-sm font-semibold text-ink">价格信号</div>
@@ -66,6 +71,26 @@ export default async function KnowledgePage({ params }: PageProps) {
   );
 }
 
+function SwotColumn({ title, items }: { title: string; items: Array<{ point?: string; confidence?: number; evidence_ids?: string[] }> }) {
+  return (
+    <div className="rounded-md bg-panel p-3">
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-steel">{title}</div>
+      {items.length ? (
+        <div className="space-y-2">
+          {items.slice(0, 3).map((item, index) => (
+            <div key={index} className="text-sm leading-6 text-ink">
+              {item.point}
+              <div className="mt-1 text-xs text-steel">confidence {Number(item.confidence ?? 0).toFixed(2)}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="text-sm text-steel">unknown</div>
+      )}
+    </div>
+  );
+}
+
 function InfoBlock({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md bg-panel p-3">
@@ -74,4 +99,3 @@ function InfoBlock({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
-

@@ -61,12 +61,45 @@ def test_mvp_query_to_markdown_report_flow() -> None:
         body = report.json()
         assert body["markdown"]
         assert "## 事实结论" in body["markdown"]
+        assert "## SWOT 摘要" in body["markdown"]
+        assert "## QA 与红队挑战" in body["markdown"]
         assert "ev_" in body["markdown"]
         assert body["html"]
         assert body["json_report"]["claims"]
+        assert body["json_report"]["agent_outputs"]["quality_gate"]["payload"]["quality_score"]
         assert body["quality_score"]["total"] >= 70
 
         runs = client.get(f"/api/projects/{project_id}/agent-runs")
         assert runs.status_code == 200
-        assert len(runs.json()) == 8
+        assert len(runs.json()) >= 24
 
+
+def test_ecommerce_query_uses_domain_competitors_and_deep_report_sections() -> None:
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/projects",
+            json={
+                "query": "请分析网购协作领域的竞品，包括 京东、阿里巴巴、拼多多、唯品会等平台并生成产品经理视角报告。",
+                "mode": "deep",
+                "language": "zh-CN",
+                "output_formats": ["markdown", "html", "json"],
+                "max_competitors": 6,
+                "enable_deep_review": True,
+            },
+        )
+        assert created.status_code == 200, created.text
+        project_id = created.json()["project_id"]
+
+        run = client.post(f"/api/projects/{project_id}/run")
+        assert run.status_code == 200, run.text
+        assert run.json()["status"] == "completed"
+
+        competitors = client.get(f"/api/projects/{project_id}/competitors").json()["competitors"]
+        names = {competitor["name"] for competitor in competitors}
+        assert {"京东", "阿里巴巴", "拼多多", "唯品会"}.issubset(names)
+        assert all(competitor["source_coverage"] for competitor in competitors)
+
+        report = client.get(f"/api/projects/{project_id}/report").json()
+        assert "e-commerce" in report["json_report"]["agent_outputs"]["intent"]["industry"]
+        assert "## 战略洞察与机会地图" in report["markdown"]
+        assert "## QA 与红队挑战" in report["markdown"]

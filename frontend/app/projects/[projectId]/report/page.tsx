@@ -1,6 +1,7 @@
 import { FileText } from "lucide-react";
+import { InsightRail } from "@/components/report/InsightRail";
+import { QualityPanel } from "@/components/report/QualityPanel";
 import { ReportViewer } from "@/components/report/ReportViewer";
-import { MetricCard } from "@/components/ui/MetricCard";
 import { ProjectNav } from "@/components/ui/ProjectNav";
 import { getReport } from "@/lib/api";
 
@@ -24,21 +25,20 @@ export default async function ReportPage({ params }: PageProps) {
           </div>
           <ProjectNav projectId={projectId} />
         </header>
-        {report.quality_score ? (
-          <div className="grid gap-3 md:grid-cols-4">
-            <MetricCard label="总分" value={`${report.quality_score.total}/100`} tone="good" />
-            <MetricCard label="覆盖度" value={`${report.quality_score.coverage}/20`} />
-            <MetricCard label="证据充分性" value={`${report.quality_score.evidence_strength}/20`} />
-            <MetricCard label="引用准确性" value={`${report.quality_score.citation_accuracy}/15`} />
+        <section className="grid gap-5 xl:grid-cols-[1fr_320px]">
+          <div>
+            {report.markdown ? (
+              <ReportViewer projectId={projectId} markdown={report.markdown} />
+            ) : (
+              <div className="rounded-lg border border-line bg-white p-5 text-sm text-steel">暂无报告，请先运行项目。</div>
+            )}
           </div>
-        ) : null}
-        {report.markdown ? (
-          <ReportViewer projectId={projectId} markdown={report.markdown} />
-        ) : (
-          <div className="rounded-lg border border-line bg-white p-5 text-sm text-steel">暂无报告，请先运行项目。</div>
-        )}
+          <div className="space-y-5">
+            {report.quality_score ? <QualityPanel score={report.quality_score} /> : null}
+            <InsightRail report={report.json_report} />
+          </div>
+        </section>
       </div>
     </main>
   );
 }
-

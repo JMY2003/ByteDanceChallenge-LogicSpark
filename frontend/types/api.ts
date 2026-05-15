@@ -86,6 +86,13 @@ export type CompetitorProfile = {
     cons: Array<Record<string, unknown>>;
   };
   technical_signals: Array<Record<string, unknown>>;
+  swot?: {
+    strengths?: Array<{ point?: string; confidence?: number; evidence_ids?: string[] }>;
+    weaknesses?: Array<{ point?: string; confidence?: number; evidence_ids?: string[] }>;
+    opportunities?: Array<{ point?: string; confidence?: number; evidence_ids?: string[] }>;
+    threats?: Array<{ point?: string; confidence?: number; evidence_ids?: string[] }>;
+  };
+  source_coverage?: string[];
   last_updated: string;
 };
 
@@ -127,4 +134,3 @@ export type ReportResponse = {
   json_report?: Record<string, unknown> | null;
   quality_score?: QualityScore | null;
 };
-

@@ -53,9 +53,9 @@ class CompetitorProfile(StrictBaseModel):
     market_signals: list[dict] = Field(default_factory=list)
     technical_signals: list[dict] = Field(default_factory=list)
     swot: dict = Field(default_factory=lambda: {"strengths": [], "weaknesses": [], "opportunities": [], "threats": []})
+    source_coverage: list[str] = Field(default_factory=list)
     last_updated: str
 
 
 class CompetitorListResponse(StrictBaseModel):
     competitors: list[CompetitorProfile]
-

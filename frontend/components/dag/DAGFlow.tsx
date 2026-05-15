@@ -22,12 +22,32 @@ const statusColor: Record<string, string> = {
 
 export function DAGFlow({ dag }: { dag: DagResponse }) {
   const nodes = useMemo<Node[]>(() => {
-    return dag.nodes.map((node, index) => ({
+    const byId = new Map(dag.nodes.map((node) => [node.id, node]));
+    const depth = new Map<string, number>();
+    function getDepth(id: string): number {
+      if (depth.has(id)) return depth.get(id)!;
+      const node = byId.get(id);
+      if (!node || !node.depends_on.length) {
+        depth.set(id, 0);
+        return 0;
+      }
+      const value = Math.max(...node.depends_on.map(getDepth)) + 1;
+      depth.set(id, value);
+      return value;
+    }
+    dag.nodes.forEach((node) => getDepth(node.id));
+    const depthCounts = new Map<number, number>();
+    return dag.nodes.map((node) => ({
       id: node.id,
-      position: { x: 80 + (index % 4) * 260, y: 80 + Math.floor(index / 4) * 170 },
+      position: (() => {
+        const column = depth.get(node.id) ?? 0;
+        const row = depthCounts.get(column) ?? 0;
+        depthCounts.set(column, row + 1);
+        return { x: 80 + column * 245, y: 60 + row * 126 };
+      })(),
       data: {
         label: (
-          <div className="min-w-44">
+          <div className="min-w-40">
             <div className="text-sm font-semibold text-ink">{node.label}</div>
             <div className="mt-1 text-xs text-steel">{node.agent_name}</div>
             <div className="mt-2 inline-flex rounded-full px-2 py-1 text-xs font-medium text-white" style={{ background: statusColor[node.status] ?? "#667085" }}>
@@ -66,4 +86,3 @@ export function DAGFlow({ dag }: { dag: DagResponse }) {
     </div>
   );
 }
-

@@ -16,7 +16,12 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./competescope.db"
     redis_url: str = "redis://localhost:6379/0"
     qdrant_url: str = "http://localhost:6333"
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
+    cors_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ]
+    )
     offline_mode: bool = True
     max_search_results_per_competitor: int = 3
     max_crawl_documents: int = 24
@@ -35,4 +40,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

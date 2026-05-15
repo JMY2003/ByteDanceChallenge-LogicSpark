@@ -3,6 +3,7 @@
 __pycache__/
 .pytest_cache/
 .venv/
+.runtime/
 backend/.venv/
 backend/*.db
 backend/test_competescope.db

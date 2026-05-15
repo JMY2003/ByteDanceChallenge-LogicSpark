@@ -37,7 +37,7 @@ services:
       COMPETESCOPE_REDIS_URL: redis://redis:6379/0
       COMPETESCOPE_QDRANT_URL: http://qdrant:6333
       COMPETESCOPE_OFFLINE_MODE: "true"
-      COMPETESCOPE_CORS_ORIGINS: '["http://localhost:3000"]'
+      COMPETESCOPE_CORS_ORIGINS: '["http://localhost:3000","http://127.0.0.1:3000"]'
     volumes:
       - ./backend:/app/backend
     ports:
@@ -66,4 +66,3 @@ services:
 volumes:
   postgres_data:
   qdrant_data:
-

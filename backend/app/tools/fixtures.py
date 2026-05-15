@@ -171,6 +171,86 @@ OFFLINE_SOURCE_FIXTURES: dict[str, list[dict]] = {
             ),
         },
     ],
+    "京东": [
+        {
+            "url": "offline://jd/product",
+            "title": "京东平台能力 fixture",
+            "source_type": "official",
+            "content": (
+                "京东是中国综合电商与供应链服务平台，公开定位通常围绕自营零售、3C 家电、物流履约、即时零售和企业采购。"
+                "平台能力信号包括京东物流、仓配一体、品质保障、会员体系和商家开放平台。"
+            ),
+        },
+        {
+            "url": "offline://jd/pricing",
+            "title": "京东商业模式 fixture",
+            "source_type": "third_party",
+            "content": (
+                "商业模式信号包括自营零售差价、平台佣金、广告营销、物流服务、企业服务和会员权益。"
+                "具体佣金、广告价格和履约成本需要以当前官方招商与商家规则为准。"
+            ),
+        },
+    ],
+    "阿里巴巴": [
+        {
+            "url": "offline://alibaba/product",
+            "title": "阿里巴巴电商生态 fixture",
+            "source_type": "official",
+            "content": (
+                "阿里巴巴电商生态覆盖淘宝、天猫、1688、跨境电商、本地生活与商家服务等场景。"
+                "公开能力信号包括平台流量、商家工具、营销体系、支付与云基础设施生态。"
+            ),
+        },
+        {
+            "url": "offline://alibaba/merchant",
+            "title": "阿里巴巴商家服务 fixture",
+            "source_type": "docs",
+            "content": (
+                "商家服务信号包括店铺经营、广告投放、会员运营、数据分析、直播内容和品牌旗舰店能力。"
+                "平台规则与费用需根据当前招商文档和商家后台信息刷新。"
+            ),
+        },
+    ],
+    "拼多多": [
+        {
+            "url": "offline://pinduoduo/product",
+            "title": "拼多多平台定位 fixture",
+            "source_type": "official",
+            "content": (
+                "拼多多是以高性价比商品、社交裂变、农产品上行和平台补贴心智著称的电商平台。"
+                "能力信号包括低价供给、推荐分发、多人团购、百亿补贴和商家生态。"
+            ),
+        },
+        {
+            "url": "offline://pinduoduo/user-voice",
+            "title": "拼多多用户心智 fixture",
+            "source_type": "review",
+            "content": (
+                "用户反馈信号常围绕价格吸引力、商品丰富度、履约体验、售后体验和品质感知差异展开。"
+                "这些评价需要结合第三方评论和近期用户调研验证。"
+            ),
+        },
+    ],
+    "唯品会": [
+        {
+            "url": "offline://vip/product",
+            "title": "唯品会平台定位 fixture",
+            "source_type": "official",
+            "content": (
+                "唯品会公开定位偏向品牌特卖、折扣零售和服饰美妆等垂类消费场景。"
+                "平台能力信号包括品牌折扣供应、限时特卖、会员运营、正品保障和垂类用户心智。"
+            ),
+        },
+        {
+            "url": "offline://vip/business",
+            "title": "唯品会商业模式 fixture",
+            "source_type": "third_party",
+            "content": (
+                "商业模式信号包括品牌特卖、自营与平台结合、营销活动和会员复购。"
+                "具体品牌合作和费用信息需要以最新公开财报、招商材料或官方页面为准。"
+            ),
+        },
+    ],
 }
 
 
@@ -184,4 +264,3 @@ def fixture_by_url(url: str) -> dict | None:
             if item["url"] == url:
                 return item
     return None
-

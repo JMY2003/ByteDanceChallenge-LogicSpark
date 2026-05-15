@@ -43,17 +43,40 @@ KNOWN_COMPETITORS = [
     "Reflect",
     "Tana",
     "Obsidian",
+    "京东",
+    "阿里巴巴",
+    "淘宝",
+    "天猫",
+    "拼多多",
+    "唯品会",
 ]
 
 MVP_TASKS = [
     {"id": "intent", "agent": "IntentAgent", "depends_on": [], "priority": 1},
     {"id": "planner", "agent": "PlannerAgent", "depends_on": ["intent"], "priority": 2},
-    {"id": "web_search", "agent": "WebSearchAgent", "depends_on": ["planner"], "priority": 3},
-    {"id": "web_crawler", "agent": "WebCrawlerAgent", "depends_on": ["web_search"], "priority": 4},
-    {"id": "schema_extraction", "agent": "SchemaExtractionAgent", "depends_on": ["web_crawler"], "priority": 5},
-    {"id": "evidence_builder", "agent": "EvidenceBuilderAgent", "depends_on": ["schema_extraction"], "priority": 6},
-    {"id": "analysis", "agent": "AnalysisAgent", "depends_on": ["evidence_builder"], "priority": 7},
-    {"id": "report_writer", "agent": "ReportWriterAgent", "depends_on": ["analysis"], "priority": 8},
+    {"id": "competitor_discovery", "agent": "CompetitorDiscoveryAgent", "depends_on": ["planner"], "priority": 3},
+    {"id": "source_planning", "agent": "SourcePlanningAgent", "depends_on": ["competitor_discovery"], "priority": 4},
+    {"id": "web_search", "agent": "WebSearchAgent", "depends_on": ["source_planning"], "priority": 5},
+    {"id": "web_crawler", "agent": "WebCrawlerAgent", "depends_on": ["web_search"], "priority": 6},
+    {"id": "document_cleaner", "agent": "DocumentCleanerAgent", "depends_on": ["web_crawler"], "priority": 7},
+    {"id": "schema_extraction", "agent": "SchemaExtractionAgent", "depends_on": ["document_cleaner"], "priority": 8},
+    {"id": "evidence_builder", "agent": "EvidenceBuilderAgent", "depends_on": ["schema_extraction"], "priority": 9},
+    {"id": "product_positioning", "agent": "ProductPositioningAgent", "depends_on": ["evidence_builder"], "priority": 10},
+    {"id": "feature_matrix", "agent": "FeatureMatrixAgent", "depends_on": ["evidence_builder"], "priority": 10},
+    {"id": "pricing_analysis", "agent": "PricingAnalysisAgent", "depends_on": ["evidence_builder"], "priority": 10},
+    {"id": "user_voice", "agent": "UserVoiceAgent", "depends_on": ["evidence_builder"], "priority": 10},
+    {"id": "technology_intelligence", "agent": "TechnologyIntelligenceAgent", "depends_on": ["evidence_builder"], "priority": 10},
+    {"id": "gtm", "agent": "GTMAgent", "depends_on": ["evidence_builder"], "priority": 10},
+    {"id": "swot", "agent": "SWOTAgent", "depends_on": ["product_positioning", "feature_matrix", "pricing_analysis", "user_voice", "technology_intelligence", "gtm"], "priority": 11},
+    {"id": "strategic_insight", "agent": "StrategicInsightAgent", "depends_on": ["swot"], "priority": 12},
+    {"id": "analysis", "agent": "AnalysisAgent", "depends_on": ["strategic_insight"], "priority": 13},
+    {"id": "fact_check", "agent": "FactCheckAgent", "depends_on": ["analysis"], "priority": 14},
+    {"id": "citation_check", "agent": "CitationCheckAgent", "depends_on": ["analysis"], "priority": 14},
+    {"id": "consistency_check", "agent": "ConsistencyCheckAgent", "depends_on": ["analysis"], "priority": 14},
+    {"id": "bias_detection", "agent": "BiasDetectionAgent", "depends_on": ["analysis"], "priority": 14},
+    {"id": "red_team", "agent": "RedTeamAgent", "depends_on": ["analysis"], "priority": 14},
+    {"id": "quality_gate", "agent": "QualityGateAgent", "depends_on": ["fact_check", "citation_check", "consistency_check", "bias_detection", "red_team"], "priority": 15},
+    {"id": "report_writer", "agent": "ReportWriterAgent", "depends_on": ["quality_gate"], "priority": 16},
 ]
 
 REQUIRED_DIMENSIONS = [
@@ -96,7 +119,7 @@ class IntentAgent(BaseAgent):
 
 class PlannerAgent(BaseAgent):
     name = "PlannerAgent"
-    description = "Plan the MVP DAG and retry policy."
+    description = "Plan the full research DAG and retry policy."
     output_model = PlannerOutput
 
     async def run(self, input_data: dict, context: AgentContext) -> dict:
@@ -117,7 +140,7 @@ class PlannerAgent(BaseAgent):
                     for task in tasks
                     for dependency in task["depends_on"]
                 ],
-                "notes": "MVP path can be extended with parallel analysis and QA nodes.",
+                "notes": "Deep path: collection, schema extraction, parallel analysis agents, QA review and final report.",
             },
             "tasks": tasks,
         }
@@ -129,19 +152,26 @@ class WebSearchAgent(BaseAgent):
     output_model = SearchResultsOutput
 
     async def run(self, input_data: dict, context: AgentContext) -> dict:
-        intent = input_data["dependency_outputs"].get("intent") or input_data.get("memory", {}).get("intent", {})
-        competitors = intent.get("target_companies") or []
+        all_outputs = collect_outputs(input_data)
+        intent = all_outputs.get("intent", {})
+        discovery = all_outputs.get("competitor_discovery", {}).get("payload", {})
+        source_plan = all_outputs.get("source_planning", {}).get("payload", {}).get("source_plan", [])
+        competitors = discovery.get("competitors") or intent.get("target_companies") or []
         if not competitors:
             competitors = [intent.get("analysis_topic") or input_data["project"]["query"]]
 
         all_results: list[dict] = []
         seen_urls: set[str] = set()
-        for competitor in competitors:
-            queries = [
-                f"{competitor} official product features pricing",
-                f"{competitor} user reviews security integrations",
-            ]
-            for query in queries[:1 if context.config.offline_mode else 2]:
+        plans = source_plan or [
+            {"competitor": competitor, "query": f"{competitor} official product features pricing reviews", "source_type": "mixed"}
+            for competitor in competitors
+        ]
+        for plan in plans:
+            competitor = plan.get("competitor", "unknown")
+            queries = [plan.get("query") or f"{competitor} official product features pricing reviews"]
+            if not context.config.offline_mode:
+                queries.append(f"{competitor} user reviews security integrations recent updates")
+            for query in queries:
                 result = await context.call_tool(
                     "web_search",
                     {
@@ -227,8 +257,10 @@ class SchemaExtractionAgent(BaseAgent):
     output_model = ExtractionOutput
 
     async def run(self, input_data: dict, context: AgentContext) -> dict:
-        docs_output = input_data["dependency_outputs"].get("web_crawler", {})
-        documents = docs_output.get("documents", [])
+        all_outputs = collect_outputs(input_data)
+        cleaned_output = all_outputs.get("document_cleaner", {}).get("payload", {})
+        docs_output = all_outputs.get("web_crawler", {})
+        documents = cleaned_output.get("cleaned_documents") or docs_output.get("documents", [])
         grouped: dict[str, list[dict]] = defaultdict(list)
         chunks: list[dict] = []
         for document in documents:
@@ -370,6 +402,7 @@ class AnalysisAgent(BaseAgent):
 
         competitors = context.db.scalars(select(Competitor).where(Competitor.project_id == context.project_id)).all()
         evidence = context.db.scalars(select(Evidence).where(Evidence.project_id == context.project_id)).all()
+        all_outputs = collect_outputs(input_data)
         evidence_by_competitor: dict[str, list[str]] = defaultdict(list)
         for item in evidence:
             competitor = item.evidence_metadata.get("competitor", "unknown")
@@ -377,7 +410,8 @@ class AnalysisAgent(BaseAgent):
 
         claims: list[dict] = []
         feature_matrix: dict[str, dict[str, dict]] = {}
-        all_features = sorted({feature["name"] for c in competitors for feature in c.profile.get("features", [])})
+        feature_agent_matrix = all_outputs.get("feature_matrix", {}).get("payload", {}).get("feature_matrix", {})
+        all_features = sorted(feature_agent_matrix.keys() or {feature["name"] for c in competitors for feature in c.profile.get("features", [])})
         for feature in all_features:
             feature_matrix[feature] = {}
 
@@ -406,12 +440,43 @@ class AnalysisAgent(BaseAgent):
             )
 
             for feature in all_features:
-                matched = next((item for item in profile.get("features", []) if item["name"] == feature), None)
-                feature_matrix[feature][competitor.name] = {
-                    "support": bool(matched),
-                    "maturity": matched.get("maturity", "unknown") if matched else "unknown",
-                    "evidence_ids": matched.get("evidence_ids", []) if matched else [],
-                }
+                if feature_agent_matrix:
+                    feature_matrix[feature][competitor.name] = feature_agent_matrix.get(feature, {}).get(
+                        competitor.name,
+                        {"support": False, "maturity": "unknown", "evidence_ids": []},
+                    )
+                else:
+                    matched = next((item for item in profile.get("features", []) if item["name"] == feature), None)
+                    feature_matrix[feature][competitor.name] = {
+                        "support": bool(matched),
+                        "maturity": matched.get("maturity", "unknown") if matched else "unknown",
+                        "evidence_ids": matched.get("evidence_ids", []) if matched else [],
+                    }
+
+        for node_id in [
+            "product_positioning",
+            "pricing_analysis",
+            "user_voice",
+            "technology_intelligence",
+            "gtm",
+            "swot",
+            "strategic_insight",
+        ]:
+            for finding in all_outputs.get(node_id, {}).get("payload", {}).get("findings", []):
+                evidence_ids = finding.get("evidence_ids", [])
+                claim_type = finding.get("claim_type", "inference")
+                claims.append(
+                    create_claim(
+                        context.project_id,
+                        claim_text=finding.get("claim", "unknown"),
+                        claim_type=claim_type if evidence_ids else "unknown",
+                        subject=finding.get("subject", "overall"),
+                        confidence=finding.get("confidence", 0.5 if evidence_ids else 0.1),
+                        evidence_ids=evidence_ids,
+                        created_by=finding.get("created_by_agent", node_id),
+                        risk_level=finding.get("risk_level", "medium"),
+                    )
+                )
 
         if evidence:
             all_ev_ids = [item.id for item in evidence[:5]]
@@ -489,15 +554,17 @@ class ReportWriterAgent(BaseAgent):
         competitors = context.db.scalars(select(Competitor).where(Competitor.project_id == context.project_id)).all()
         evidence = context.db.scalars(select(Evidence).where(Evidence.project_id == context.project_id)).all()
         claims = context.db.scalars(select(Claim).where(Claim.project_id == context.project_id)).all()
-        analysis = input_data["dependency_outputs"].get("analysis", {})
-        quality = compute_quality_score(competitors, evidence, claims)
-        markdown = render_markdown(project, competitors, evidence, claims, analysis, quality)
+        all_outputs = collect_outputs(input_data)
+        analysis = all_outputs.get("analysis", {})
+        quality = all_outputs.get("quality_gate", {}).get("payload", {}).get("quality_score") or compute_quality_score(competitors, evidence, claims)
+        markdown = render_markdown(project, competitors, evidence, claims, analysis, quality, all_outputs)
         json_report = {
             "project_id": context.project_id,
-            "summary": "Evidence-bound MVP competitive analysis report.",
+            "summary": "Evidence-bound deep competitive intelligence report.",
             "competitors": [competitor.profile for competitor in competitors],
             "feature_matrix": analysis.get("feature_matrix", {}),
             "strategic_insights": analysis.get("strategic_insights", []),
+            "agent_outputs": {key: value for key, value in all_outputs.items() if key not in {"report_writer"}},
             "claims": [claim_to_dict(claim) for claim in claims],
             "evidence": [evidence_to_dict(item) for item in evidence],
             "quality_score": quality,
@@ -526,16 +593,23 @@ def extract_companies(query: str) -> list[str]:
             found.append(name)
     if found:
         return found
-    maybe_segment = re.search(r"(?:包括|分析|对比)([^，。；\n]+)", query)
+    maybe_segment = re.search(r"包括([^。；\n]+)", query) or re.search(r"对比([^。；\n]+)", query)
     if maybe_segment:
         tokens = re.split(r"[、,，/和与]", maybe_segment.group(1))
-        return [token.strip() for token in tokens if 1 < len(token.strip()) < 40][:8]
+        cleaned = []
+        for token in tokens:
+            value = re.sub(r"(等平台|等产品|等竞品|平台|产品|竞品|并生成.*|生成.*)$", "", token.strip()).strip()
+            if 1 < len(value) < 40:
+                cleaned.append(value)
+        return cleaned[:8]
     return []
 
 
 def infer_industry(query: str) -> str:
     if "Agent" in query or "agent" in query:
         return "AI Agent infrastructure / development platform"
+    if "网购" in query or "电商" in query or "零售" in query or "e-commerce" in query.lower():
+        return "e-commerce / online retail platform"
     if "办公" in query or "协作" in query or "productivity" in query.lower():
         return "AI productivity / collaboration software"
     if "知识库" in query:
@@ -580,7 +654,7 @@ def build_profile(project_id: str, competitor: str, docs: list[dict]) -> dict:
         "founded_year": None,
         "headquarters": None,
         "company_stage": "unknown",
-        "product_category": "AI product / productivity platform",
+        "product_category": infer_product_category(combined),
         "target_users": infer_target_users(combined),
         "target_industries": [],
         "regions": [],
@@ -595,9 +669,10 @@ def build_profile(project_id: str, competitor: str, docs: list[dict]) -> dict:
         "integrations": extract_integrations(combined),
         "security_compliance": extract_security(combined),
         "user_feedback": extract_user_feedback(combined),
-        "market_signals": [],
+        "market_signals": extract_market_signals(combined),
         "technical_signals": extract_technical_signals(combined),
         "swot": {"strengths": [], "weaknesses": [], "opportunities": [], "threats": []},
+        "source_coverage": sorted(source_types),
         "last_updated": iso_now(),
     }
 
@@ -614,6 +689,13 @@ def extract_features(project_id: str, competitor: str, text: str) -> list[dict]:
         ("Project management", "collaboration", ["tasks", "project", "项目"]),
         ("RAG / retrieval", "ai", ["rag", "retrieval", "问答"]),
         ("Agent workflows", "ai", ["agent", "agents"]),
+        ("Self-operated retail", "commerce", ["自营", "零售差价", "综合电商"]),
+        ("Marketplace merchants", "commerce", ["商家", "开放平台", "招商", "佣金", "店铺"]),
+        ("Logistics fulfillment", "operations", ["物流", "履约", "仓配", "配送"]),
+        ("Traffic and advertising", "growth", ["广告", "营销", "流量", "直播"]),
+        ("Subsidy / low-price engine", "pricing", ["低价", "补贴", "百亿补贴", "性价比", "团购"]),
+        ("Brand discount retail", "commerce", ["品牌特卖", "折扣", "限时特卖"]),
+        ("Membership / retention", "growth", ["会员", "复购", "用户心智"]),
     ]
     features = []
     for name, category, keywords in candidates:
@@ -643,12 +725,15 @@ def extract_features(project_id: str, competitor: str, text: str) -> list[dict]:
 
 
 def extract_pricing(project_id: str, text: str, has_pricing_source: bool) -> list[dict]:
-    if not has_pricing_source and not re.search(r"price|pricing|价格|paid|free|enterprise", text, re.I):
+    if not has_pricing_source and not re.search(r"price|pricing|价格|paid|free|enterprise|佣金|广告|会员|差价|费用", text, re.I):
         return []
+    price = "unknown"
+    if re.search(r"佣金|广告|物流|差价|会员", text):
+        price = "multi-revenue: commission / ads / logistics / membership signals"
     return [
         {
             "plan_name": "public pricing signal",
-            "price": "unknown",
+            "price": price,
             "currency": None,
             "billing_cycle": "unknown",
             "target_segment": "unknown",
@@ -668,6 +753,12 @@ def infer_target_users(text: str) -> list[str]:
         users.append("enterprise")
     if "developer" in lowered or "开发" in text:
         users.append("developers")
+    if "商家" in text:
+        users.append("merchants")
+    if "消费者" in text or "用户" in text or "消费" in text:
+        users.append("consumers")
+    if "品牌" in text:
+        users.append("brands")
     return users or ["unknown"]
 
 
@@ -682,6 +773,16 @@ def infer_business_model(text: str) -> list[str]:
         models.append("enterprise")
     if "open-source" in lowered or "github" in lowered:
         models.append("open_source")
+    if "佣金" in text:
+        models.append("marketplace")
+    if "广告" in text or "营销" in text:
+        models.append("advertising")
+    if "物流" in text:
+        models.append("logistics_service")
+    if "会员" in text:
+        models.append("membership")
+    if "自营" in text or "差价" in text:
+        models.append("first_party_retail")
     return models or ["unknown"]
 
 
@@ -708,14 +809,14 @@ def extract_security(text: str) -> list[dict]:
 
 
 def extract_user_feedback(text: str) -> dict:
-    if "review" not in text.lower() and "用户" not in text and "negative" not in text.lower():
+    if "review" not in text.lower() and "用户" not in text and "negative" not in text.lower() and "反馈" not in text:
         return {"pros": [], "cons": []}
     return {
         "pros": [
-            {"theme": "breadth of capability", "summary": "Positive review signal found.", "frequency": None, "sentiment": "positive", "evidence_ids": []}
+            {"theme": "positive demand signal", "summary": "Positive review or user-mindshare signal found.", "frequency": None, "sentiment": "positive", "evidence_ids": []}
         ],
         "cons": [
-            {"theme": "complexity or verification needed", "summary": "Negative or cautionary review signal found.", "frequency": None, "sentiment": "negative", "evidence_ids": []}
+            {"theme": "experience or verification risk", "summary": "Negative or cautionary review signal found.", "frequency": None, "sentiment": "negative", "evidence_ids": []}
         ],
     }
 
@@ -734,6 +835,36 @@ def extract_technical_signals(text: str) -> list[dict]:
                 }
             )
     return signals
+
+
+def infer_product_category(text: str) -> str:
+    if re.search(r"电商|零售|商家|物流|特卖|补贴|平台佣金", text):
+        return "e-commerce / retail platform"
+    if re.search(r"docs|workspace|知识库|协同办公|documents|project", text, re.I):
+        return "AI productivity / collaboration software"
+    if re.search(r"LLM|agent|RAG|GitHub|workflow", text, re.I):
+        return "AI application infrastructure"
+    return "unknown"
+
+
+def extract_market_signals(text: str) -> list[dict]:
+    signals = []
+    for signal_type, keyword, description in [
+        ("customer_case", "企业", "Enterprise/customer signal appears in evidence."),
+        ("community_growth", "商家生态", "Merchant ecosystem signal appears in evidence."),
+        ("launch", "即时零售", "New retail or scenario expansion signal appears in evidence."),
+        ("media_coverage", "用户心智", "User mindshare signal appears in evidence."),
+        ("partnership", "品牌", "Brand partnership or brand-retail signal appears in evidence."),
+    ]:
+        if keyword in text:
+            signals.append({"signal_type": signal_type, "description": description, "date": None, "evidence_ids": []})
+    return signals
+
+
+def collect_outputs(input_data: dict) -> dict:
+    outputs = dict(input_data.get("memory", {}))
+    outputs.update(input_data.get("dependency_outputs", {}))
+    return outputs
 
 
 def credibility_score(source_type: str) -> float:
@@ -847,29 +978,59 @@ def compute_quality_score(competitors: list[Competitor], evidence: list[Evidence
     return score
 
 
-def render_markdown(project: dict, competitors: list[Competitor], evidence: list[Evidence], claims: list[Claim], analysis: dict, quality: dict) -> str:
+def render_markdown(
+    project: dict,
+    competitors: list[Competitor],
+    evidence: list[Evidence],
+    claims: list[Claim],
+    analysis: dict,
+    quality: dict,
+    agent_outputs: dict | None = None,
+) -> str:
+    agent_outputs = agent_outputs or {}
+    quality_gate = agent_outputs.get("quality_gate", {}).get("payload", {})
+    red_team = agent_outputs.get("red_team", {}).get("payload", {})
+    bias = agent_outputs.get("bias_detection", {}).get("payload", {})
+    swot = agent_outputs.get("swot", {}).get("payload", {})
+    strategic = agent_outputs.get("strategic_insight", {}).get("payload", {})
     lines = [
         f"# CompeteScope AI 竞品分析报告",
         "",
         f"**分析任务**：{project['query']}",
         "",
-        f"**生成方式**：MVP DAG 自动生成，事实、推断和建议分区展示；所有非 unknown 结论绑定 evidence_ids。",
+        f"**生成方式**：深度 DAG 自动生成，包含多 Agent 并行分析、证据绑定、红队挑战和质量门禁。",
         "",
         "## 执行摘要",
         "",
         f"- 已结构化竞品：{len(competitors)} 个。",
         f"- 已构建证据：{len(evidence)} 条。",
         f"- 质量评分：{quality['total']}/100。",
+        f"- 交付状态：{quality_gate.get('status', 'pass_with_warnings')}。",
         "",
-        "## 事实结论",
+        "## 一页结论",
         "",
     ]
+    top_claims = [claim for claim in claims if claim.claim_type in {"inference", "recommendation", "opportunity"}][:6]
+    lines.extend(render_claim_lines(top_claims))
+    lines.extend([
+        "## 事实结论",
+        "",
+    ])
     facts = [claim for claim in claims if claim.claim_type in {"fact", "unknown"}]
     lines.extend(render_claim_lines(facts))
     lines.extend(["", "## 推断", ""])
     lines.extend(render_claim_lines([claim for claim in claims if claim.claim_type == "inference"]))
     lines.extend(["", "## 建议", ""])
     lines.extend(render_claim_lines([claim for claim in claims if claim.claim_type == "recommendation"]))
+    lines.extend(["", "## 战略洞察与机会地图", ""])
+    for insight in strategic.get("strategic_insights", []):
+        lines.append(
+            f"- **{insight.get('type', 'insight')}**：{insight.get('claim', 'unknown')} "
+            f"[confidence: {insight.get('confidence', 0):.2f}; risk: {insight.get('risk_level', 'medium')}; "
+            f"证据: {', '.join(insight.get('evidence_ids', [])) or 'unknown'}]"
+        )
+    if not strategic.get("strategic_insights"):
+        lines.append("- unknown：当前证据不足以形成额外战略洞察。")
     lines.extend(["", "## 竞品知识库摘要", ""])
     for competitor in competitors:
         profile = competitor.profile
@@ -884,6 +1045,7 @@ def render_markdown(project: dict, competitors: list[Competitor], evidence: list
                 f"[证据: {', '.join(profile.get('positioning', {}).get('evidence_ids', [])) or 'unknown'}]",
                 f"- 功能信号：{feature_names}",
                 f"- 价格信号：{pricing_text}",
+                f"- 信息源覆盖：{', '.join(profile.get('source_coverage', [])) or 'unknown'}",
                 "",
             ]
         )
@@ -902,6 +1064,30 @@ def render_markdown(project: dict, competitors: list[Competitor], evidence: list
             lines.append("| " + feature + " | " + " | ".join(cells) + " |")
     else:
         lines.append("当前证据不足，功能矩阵为 unknown。")
+    lines.extend(["", "## SWOT 摘要", ""])
+    swot_items = swot.get("swot", {})
+    for competitor in competitors:
+        block = swot_items.get(competitor.name, {})
+        lines.append(f"### {competitor.name}")
+        for label, key in [("Strengths", "strengths"), ("Weaknesses", "weaknesses"), ("Opportunities", "opportunities"), ("Threats", "threats")]:
+            values = block.get(key, [])
+            text = "; ".join(
+                f"{item.get('point', 'unknown')} ({', '.join(item.get('evidence_ids', [])) or 'unknown'})"
+                for item in values[:3]
+            ) or "unknown"
+            lines.append(f"- {label}: {text}")
+        lines.append("")
+    lines.extend(["## QA 与红队挑战", ""])
+    for warning in quality_gate.get("warnings", []):
+        lines.append(f"- 质量门禁警告：{warning}")
+    for challenge in red_team.get("red_team_challenges", []):
+        lines.append(
+            f"- 红队挑战：{challenge.get('challenge')} | severity={challenge.get('severity')} | fix={challenge.get('suggested_fix')}"
+        )
+    for item in bias.get("bias_report", []):
+        lines.append(f"- 偏差提示：{item.get('description')} 建议：{item.get('recommendation')}")
+    if not quality_gate.get("warnings") and not red_team.get("red_team_challenges") and not bias.get("bias_report"):
+        lines.append("- 暂无高风险 QA 问题。")
     lines.extend(
         [
             "",
