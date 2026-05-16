@@ -68,3 +68,4 @@ uv run pytest
 ```
 
 测试会完整验证：创建项目、运行深度 DAG、生成竞品知识库、构建 evidence、输出 Markdown/HTML/JSON 报告、QA 结果和 Agent 日志。
+test
