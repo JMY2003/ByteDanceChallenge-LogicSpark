@@ -4,14 +4,20 @@ import type {
   DagResponse,
   EvidenceItem,
   ProjectCreated,
+  ProjectHistoryItem,
   ProjectStatus,
   ReportResponse
 } from "@/types/api";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+function getApiBase() {
+  if (typeof window === "undefined") {
+    return process.env.INTERNAL_API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+  }
+  return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+}
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const url = `${API_BASE}${path}`;
+  const url = `${getApiBase()}${path}`;
   let response: Response;
   try {
     response = await fetch(url, {
@@ -52,6 +58,11 @@ export async function runProject(projectId: string): Promise<ProjectStatus> {
 
 export async function getProjectStatus(projectId: string): Promise<ProjectStatus> {
   return apiFetch<ProjectStatus>(`/api/projects/${projectId}/status`);
+}
+
+export async function getProjectHistory(): Promise<ProjectHistoryItem[]> {
+  const response = await apiFetch<{ projects: ProjectHistoryItem[] }>("/api/projects/history");
+  return response.projects;
 }
 
 export async function getDag(projectId: string): Promise<DagResponse> {

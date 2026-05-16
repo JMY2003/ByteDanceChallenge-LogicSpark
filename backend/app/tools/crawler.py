@@ -64,20 +64,23 @@ class WebCrawlerTool(BaseTool):
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError(f"Unsupported crawl URL: {url}")
 
-        if not await self._allowed_by_robots(url, settings.crawler_user_agent):
+        if not await self._allowed_by_robots(url, settings.crawler_user_agent, settings.crawler_robots_timeout_seconds):
             raise PermissionError(f"robots.txt disallows crawling {url}")
 
         await _rate_limiter.wait(parsed.netloc, settings.crawler_rate_limit_seconds)
         async with httpx.AsyncClient(
             headers={"User-Agent": settings.crawler_user_agent},
             follow_redirects=True,
-            timeout=15,
+            timeout=httpx.Timeout(settings.crawler_request_timeout_seconds, connect=5.0),
         ) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            html = response.text
+            async with client.stream("GET", url) as response:
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "").lower()
+                if content_type and not is_text_response(content_type):
+                    raise ValueError(f"Unsupported crawl content type: {content_type}")
+                html, truncated = await read_limited_text(response, settings.crawler_max_html_bytes)
 
-        title, text = self._extract_text(html)
+        title, text = self._extract_text(html, settings.crawler_max_text_chars)
         content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
         return {
             "document": {
@@ -91,18 +94,19 @@ class WebCrawlerTool(BaseTool):
                 "metadata": {
                     "status_code": response.status_code,
                     "content_type": response.headers.get("content-type", ""),
+                    "html_truncated": truncated,
                     "compliance": "robots_checked_rate_limited",
                 },
             }
         }
 
-    async def _allowed_by_robots(self, url: str, user_agent: str) -> bool:
+    async def _allowed_by_robots(self, url: str, user_agent: str, timeout_seconds: float) -> bool:
         parsed = urlparse(url)
         robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
         parser = RobotFileParser()
         parser.set_url(robots_url)
         try:
-            async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
                 response = await client.get(robots_url)
             if response.status_code >= 400:
                 return True
@@ -111,11 +115,43 @@ class WebCrawlerTool(BaseTool):
         except httpx.HTTPError:
             return True
 
-    def _extract_text(self, html: str) -> tuple[str, str]:
+    def _extract_text(self, html: str, max_chars: int) -> tuple[str, str]:
         soup = BeautifulSoup(html, "html.parser")
         title = soup.title.string.strip() if soup.title and soup.title.string else "Untitled"
         for tag in soup(["script", "style", "noscript", "svg", "form", "nav", "footer"]):
             tag.decompose()
         text = "\n".join(line.strip() for line in soup.get_text("\n").splitlines() if line.strip())
-        return title, text[:60000]
+        return title, text[:max_chars]
 
+
+def is_text_response(content_type: str) -> bool:
+    return any(
+        marker in content_type
+        for marker in (
+            "text/html",
+            "text/plain",
+            "application/xhtml+xml",
+            "application/json",
+            "application/ld+json",
+        )
+    )
+
+
+async def read_limited_text(response: httpx.Response, max_bytes: int) -> tuple[str, bool]:
+    chunks: list[bytes] = []
+    total = 0
+    truncated = False
+    async for chunk in response.aiter_bytes():
+        remaining = max_bytes - total
+        if remaining <= 0:
+            truncated = True
+            break
+        if len(chunk) > remaining:
+            chunks.append(chunk[:remaining])
+            truncated = True
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    body = b"".join(chunks)
+    encoding = response.encoding or "utf-8"
+    return body.decode(encoding, errors="replace"), truncated

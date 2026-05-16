@@ -6,13 +6,14 @@ from collections import Counter
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agents.base import AgentContext
+from app.agents.base import AgentContext, compact_for_storage
 from app.agents.registry import build_agent_registry
 from app.config import get_settings
 from app.core.ids import stable_id
 from app.core.time import utc_now
-from app.db.models import Project, Report, Task
+from app.db.models import AgentRun, Project, Report, Task
 from app.orchestrator.dag import DAGNodeSpec, mvp_dag, validate_dag
+from app.services.llm_service import LLMService
 from app.tools.registry import build_tool_registry
 
 
@@ -57,6 +58,24 @@ class DAGOrchestrator:
             raise KeyError(f"Project not found: {project_id}")
 
         ensure_project_tasks(self.db, project)
+        interrupted = self.db.scalars(
+            select(Task).where(Task.project_id == project_id, Task.status == "running")
+        ).all()
+        for task in interrupted:
+            task.status = "pending"
+            task.error = "Recovered from interrupted backend process."
+            task.ended_at = utc_now()
+            running_runs = self.db.scalars(
+                select(AgentRun).where(
+                    AgentRun.project_id == project_id,
+                    AgentRun.task_id == task.id,
+                    AgentRun.status == "running",
+                )
+            ).all()
+            for run in running_runs:
+                run.status = "failed"
+                run.error = "Recovered from interrupted backend process."
+                run.ended_at = utc_now()
         project.status = "running"
         project.updated_at = utc_now()
         self.db.commit()
@@ -130,7 +149,7 @@ class DAGOrchestrator:
             "dependency_outputs": dependency_outputs,
             "memory": memory,
         }
-        task.input = input_data
+        task.input = compact_for_storage(input_data)
         self.db.commit()
 
         context = AgentContext(
@@ -139,6 +158,7 @@ class DAGOrchestrator:
             db=self.db,
             tools=self.tools,
             config=self.config,
+            llm=LLMService(self.config),
             memory=memory,
         )
         try:
@@ -174,4 +194,3 @@ class DAGOrchestrator:
             "current_nodes": [task.node_id for task in tasks if task.status == "running"],
             "quality_score": report.report_metadata.get("quality_score") if report else None,
         }
-

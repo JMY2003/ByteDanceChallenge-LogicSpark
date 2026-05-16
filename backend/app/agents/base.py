@@ -13,7 +13,15 @@ from app.core.ids import new_id
 from app.core.time import iso_now, utc_now
 from app.db.models import AgentRun
 from app.schemas.common import ToolCallLog
+from app.services.llm_service import LLMService
 from app.tools.base import ToolRegistry
+
+
+MAX_STORED_STRING_LENGTH = 1600
+MAX_STORED_LIST_ITEMS = 12
+MAX_STORED_DICT_ITEMS = 50
+MAX_STORED_DEPTH = 7
+LARGE_TEXT_KEYS = {"content", "text", "html", "markdown", "quote", "summary"}
 
 
 @dataclass
@@ -31,6 +39,7 @@ class AgentContext:
     db: Session
     tools: ToolRegistry
     config: Settings
+    llm: LLMService | None = None
     memory: dict[str, Any] = field(default_factory=dict)
     logger: AgentLogger = field(default_factory=AgentLogger)
     run_id: str | None = None
@@ -67,6 +76,42 @@ class AgentContext:
             )
             raise
 
+    async def complete_json(self, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+        if not self.llm:
+            raise RuntimeError("LLM service is not configured.")
+        started_at = iso_now()
+        try:
+            output = await self.llm.complete_json(prompt, schema)
+            ended_at = iso_now()
+            self.logger.record(
+                ToolCallLog(
+                    tool_name=f"llm:{self.llm.model}",
+                    input={
+                        "prompt_preview": prompt[:800],
+                        "schema_keys": sorted(schema.keys()),
+                    },
+                    output_summary=summarize_tool_output(output),
+                    started_at=started_at,
+                    ended_at=ended_at,
+                    status="success",
+                )
+            )
+            return output
+        except Exception as exc:
+            ended_at = iso_now()
+            self.logger.record(
+                ToolCallLog(
+                    tool_name=f"llm:{self.llm.model}",
+                    input={"prompt_preview": prompt[:800], "schema_keys": sorted(schema.keys())},
+                    output_summary="",
+                    started_at=started_at,
+                    ended_at=ended_at,
+                    status="failed",
+                    error=str(exc),
+                )
+            )
+            raise
+
 
 def summarize_tool_output(output: dict[str, Any]) -> str:
     text = str(output)
@@ -94,7 +139,7 @@ class BaseAgent(ABC):
             task_id=context.task_id,
             agent_name=self.name,
             status="running",
-            input=input_data,
+            input=compact_for_storage(input_data),
             output={},
             tool_calls=[],
             started_at=started_at_dt,
@@ -111,8 +156,13 @@ class BaseAgent(ABC):
             run.tool_calls = context.logger.tool_calls
             run.ended_at = utc_now()
             run.duration_ms = int((time.perf_counter() - started_perf) * 1000)
-            run.token_usage = estimate_token_usage(input_data, output)
-            run.cost_estimate = 0.0
+            if context.llm and context.llm.last_usage:
+                run.model = context.llm.model
+                run.token_usage = context.llm.last_usage
+                run.cost_estimate = context.llm.last_cost_estimate
+            else:
+                run.token_usage = estimate_token_usage(input_data, output)
+                run.cost_estimate = 0.0
             context.db.commit()
             return output
         except Exception as exc:
@@ -134,3 +184,28 @@ def estimate_token_usage(input_data: dict[str, Any], output: dict[str, Any]) -> 
     output_tokens = max(1, len(str(output)) // 4)
     return {"input_tokens": input_tokens, "output_tokens": output_tokens}
 
+
+def compact_for_storage(value: Any, depth: int = 0, key: str | None = None) -> Any:
+    if depth > MAX_STORED_DEPTH:
+        return {"_truncated": "max_depth"}
+    if isinstance(value, str):
+        limit = 500 if key in LARGE_TEXT_KEYS else MAX_STORED_STRING_LENGTH
+        if len(value) <= limit:
+            return value
+        return f"{value[:limit]}... [truncated {len(value) - limit} chars]"
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        compacted = [compact_for_storage(item, depth + 1, key) for item in value[:MAX_STORED_LIST_ITEMS]]
+        if len(value) > MAX_STORED_LIST_ITEMS:
+            compacted.append({"_omitted_items": len(value) - MAX_STORED_LIST_ITEMS})
+        return compacted
+    if isinstance(value, dict):
+        compacted: dict[str, Any] = {}
+        items = list(value.items())
+        for item_key, item_value in items[:MAX_STORED_DICT_ITEMS]:
+            compacted[str(item_key)] = compact_for_storage(item_value, depth + 1, str(item_key))
+        if len(items) > MAX_STORED_DICT_ITEMS:
+            compacted["_omitted_keys"] = len(items) - MAX_STORED_DICT_ITEMS
+        return compacted
+    return str(value)

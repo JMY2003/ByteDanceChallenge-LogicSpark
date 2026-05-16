@@ -38,22 +38,42 @@ export function AgentRunList({ runs }: { runs: AgentRun[] }) {
             </div>
           </details>
           {run.tool_calls.length ? (
-            <div className="mt-3 rounded-md bg-panel p-3">
-              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-steel">Tool Calls</div>
-              <div className="space-y-2">
+            <details className="mt-3 rounded-md bg-panel p-3">
+              <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-steel">
+                Tool Calls ({run.tool_calls.length})
+              </summary>
+              <div className="mt-3 space-y-2">
                 {run.tool_calls.map((call, index) => (
-                  <div key={`${run.id}-${index}`} className="text-xs text-ink">
-                    <span className="font-semibold">{String(call.tool_name)}</span>
-                    <span className="ml-2 text-steel">{String(call.status)}</span>
-                    <span className="ml-2 text-steel">{String(call.output_summary ?? "").slice(0, 180)}</span>
-                  </div>
+                  <details key={`${run.id}-${index}`} className="border-t border-line pt-2 text-xs text-ink first:border-t-0 first:pt-0">
+                    <summary className="cursor-pointer">
+                      <span className="font-semibold">{String(call.tool_name)}</span>
+                      <span className="ml-2 text-steel">{String(call.status)}</span>
+                      <span className="ml-2 text-steel">{String(call.output_summary ?? "").slice(0, 180)}</span>
+                    </summary>
+                    <div className="mt-2 grid gap-2 lg:grid-cols-2">
+                      <pre className="max-h-56 overflow-auto rounded-md bg-white p-3 text-[11px] leading-5 text-ink">
+                        {JSON.stringify(call.input ?? {}, null, 2)}
+                      </pre>
+                      <pre className="max-h-56 overflow-auto rounded-md bg-white p-3 text-[11px] leading-5 text-ink">
+                        {JSON.stringify(
+                          {
+                            output_summary: call.output_summary ?? "",
+                            error: call.error ?? null,
+                            started_at: call.started_at ?? null,
+                            ended_at: call.ended_at ?? null
+                          },
+                          null,
+                          2
+                        )}
+                      </pre>
+                    </div>
+                  </details>
                 ))}
               </div>
-            </div>
+            </details>
           ) : null}
         </article>
       ))}
     </div>
   );
 }
-

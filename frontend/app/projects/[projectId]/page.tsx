@@ -51,18 +51,18 @@ export default async function ProjectRunPage({ params, searchParams }: PageProps
             <MetricCard label="耗时" value={`${totalDuration}ms`} />
           </div>
         </header>
-        <section className="grid gap-5 xl:grid-cols-[1fr_320px]">
-          <div className="space-y-5">
-            <DAGFlow dag={dag} />
+        <section className="space-y-5">
+          <DAGFlow dag={dag} />
+          <div className="grid gap-5 xl:grid-cols-[1fr_320px]">
             <section className="space-y-3">
               <h2 className="text-xl font-semibold text-ink">Agent 执行日志</h2>
               <AgentRunList runs={runs} />
             </section>
-          </div>
-          <div className="space-y-5">
-            {report?.quality_score ? <QualityPanel score={report.quality_score} /> : null}
-            <FeatureCoverageChart report={report?.json_report} />
-            <InsightRail report={report?.json_report} />
+            <div className="space-y-5">
+              {report?.quality_score ? <QualityPanel score={report.quality_score} /> : null}
+              <FeatureCoverageChart report={report?.json_report} />
+              <InsightRail report={report?.json_report} />
+            </div>
           </div>
         </section>
       </div>

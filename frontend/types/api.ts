@@ -14,6 +14,18 @@ export type ProjectStatus = {
   quality_score?: QualityScore | null;
 };
 
+export type ProjectHistoryItem = {
+  project_id: string;
+  status: string;
+  query: string;
+  mode: string;
+  language: string;
+  created_at: string;
+  completed_at: string;
+  task_counts: Record<string, number>;
+  quality_score?: QualityScore | null;
+};
+
 export type DagNode = {
   id: string;
   label: string;

@@ -5,7 +5,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from app.config import get_settings
+from app.config import get_settings, should_simulate
 from app.core.time import iso_now
 from app.tools.base import BaseTool
 from app.tools.fixtures import fixture_results_for, generic_fixture_results_for
@@ -22,7 +22,7 @@ class WebSearchTool(BaseTool):
         requested_source_type = input_data.get("source_type", "mixed")
         max_results = int(input_data.get("max_results") or settings.max_search_results_per_competitor)
 
-        if settings.offline_mode:
+        if should_simulate(settings):
             fixtures = fixture_results_for(competitor) or generic_fixture_results_for(competitor, query)
             results = [
                 {

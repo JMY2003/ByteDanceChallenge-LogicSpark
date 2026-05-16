@@ -28,6 +28,21 @@ class ProjectStatusResponse(StrictBaseModel):
     quality_score: dict | None = None
 
 
+class ProjectHistoryItem(StrictBaseModel):
+    project_id: str
+    status: str
+    query: str
+    mode: str
+    language: str
+    created_at: str
+    completed_at: str
+    task_counts: dict[str, int]
+    quality_score: dict | None = None
+
+
+class ProjectHistoryResponse(StrictBaseModel):
+    projects: list[ProjectHistoryItem]
+
+
 class ConfirmCompetitorsRequest(StrictBaseModel):
     competitors: list[str]
-

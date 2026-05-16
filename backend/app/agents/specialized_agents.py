@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.agents.base import AgentContext, BaseAgent
+from app.config import should_simulate
 from app.core.ids import stable_id
 from app.core.time import iso_now
 from app.db.models import Claim, Competitor, Evidence
@@ -52,22 +53,49 @@ class CompetitorDiscoveryAgent(DeepSpecializedAgent):
 
     async def run(self, input_data: dict, context: AgentContext) -> dict:
         intent = collect_outputs(input_data).get("intent", {})
-        competitors = intent.get("target_companies") or default_competitors(intent.get("industry", "unknown"))
+        project = input_data.get("project", {})
+        max_count = int(project.get("max_competitors") or 6)
+        explicit_competitors = normalize_competitor_names(intent.get("target_companies") or [], max_count)
+        llm_details: list[dict[str, Any]] = []
+        fallback_reason = ""
+
+        competitors = explicit_competitors
+        if not competitors and not should_simulate(context.config):
+            try:
+                llm_payload = await context.complete_json(
+                    competitor_discovery_prompt(project, intent, max_count),
+                    COMPETITOR_DISCOVERY_SCHEMA,
+                )
+                competitors = normalize_competitor_names(llm_payload.get("competitors") or [], max_count)
+                llm_details = normalize_competitor_details(llm_payload.get("competitor_details") or [], competitors)
+            except Exception as exc:
+                fallback_reason = str(exc)
+
+        if not competitors:
+            competitors = normalize_competitor_names(default_competitors(intent.get("industry", "unknown")), max_count)
+
         details = [
             {
                 "name": name,
                 "type": "direct",
-                "confidence": 0.92 if name in intent.get("target_companies", []) else 0.68,
-                "reason": f"Matches the requested scope: {intent.get('industry', 'unknown')}.",
+                "confidence": 0.92 if name in explicit_competitors else 0.72,
+                "reason": discovery_reason(name, llm_details, intent),
                 "evidence_ids": [],
             }
             for name in competitors
         ]
+        payload = {
+            "competitors": competitors,
+            "competitor_details": details,
+            "needs_human_confirmation": not bool(explicit_competitors),
+        }
+        if fallback_reason:
+            payload["discovery_fallback_reason"] = fallback_reason
         return self.pack(
             "success",
             f"Identified {len(competitors)} competitors for downstream source planning.",
             [],
-            {"competitors": competitors, "competitor_details": details, "needs_human_confirmation": not bool(intent.get("target_companies"))},
+            payload,
         )
 
 
@@ -618,8 +646,91 @@ def collect_outputs(input_data: dict) -> dict:
     return outputs
 
 
+COMPETITOR_DISCOVERY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "competitors": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "competitor_details": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "type": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "confidence": {"type": "number"},
+                },
+                "required": ["name", "reason"],
+            },
+        },
+    },
+    "required": ["competitors"],
+}
+
+
+def competitor_discovery_prompt(project: dict, intent: dict, max_count: int) -> str:
+    return f"""
+Choose suitable competitors for a competitive-intelligence task.
+
+Project:
+{project}
+
+Parsed intent:
+{intent}
+
+Rules:
+- Return exactly {max_count} competitors when the market has enough credible options; otherwise return as many as are genuinely relevant.
+- Choose real companies, brands, product lines, or platforms that users would actually compare in this category.
+- If the category includes a price segment or geography, respect it.
+- Keep names concise and search-friendly. Chinese names are acceptable for Chinese-market products.
+- Do not include generic categories, explanations, or invented brands in the competitors array.
+"""
+
+
+def normalize_competitor_names(values: list[Any], limit: int) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        name = str(value).strip()
+        if not name:
+            continue
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+        if len(names) >= limit:
+            break
+    return names
+
+
+def normalize_competitor_details(values: list[Any], competitors: list[str]) -> list[dict[str, Any]]:
+    competitor_set = {name.casefold() for name in competitors}
+    details = []
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        name = str(value.get("name", "")).strip()
+        if not name or name.casefold() not in competitor_set:
+            continue
+        details.append(value)
+    return details
+
+
+def discovery_reason(name: str, llm_details: list[dict[str, Any]], intent: dict) -> str:
+    for detail in llm_details:
+        if str(detail.get("name", "")).casefold() == name.casefold() and detail.get("reason"):
+            return str(detail["reason"])
+    return f"Matches the requested scope: {intent.get('industry', 'unknown')}."
+
+
 def default_competitors(industry: str) -> list[str]:
     lower = industry.lower()
+    if "laptop" in lower or "notebook" in lower or "笔记本" in industry or "电脑" in industry:
+        return ["联想小新", "华硕无畏", "惠普战66", "戴尔灵越", "荣耀MagicBook", "机械革命无界"]
     if "e-commerce" in industry:
         return ["京东", "阿里巴巴", "拼多多", "唯品会"]
     if "Agent" in industry:
@@ -634,10 +745,23 @@ def default_competitors(industry: str) -> list[str]:
         return ["Salesforce", "HubSpot", "Zoho CRM", "Pipedrive", "Intercom", "Zendesk"]
     if "knowledge" in lower:
         return ["Notion AI", "Glean", "Guru", "Confluence", "SharePoint", "飞书"]
-    return ["Notion AI", "ClickUp AI", "Coda AI", "飞书", "钉钉"]
+    return []
 
 
 def source_query(competitor: str, source_type: str, industry: str) -> str:
+    lower = industry.lower()
+    if "laptop" in lower or "notebook" in lower or "笔记本" in industry or "电脑" in industry:
+        suffix = {
+            "official": "官方 参数 配置 价格",
+            "pricing": "6000元 价格 京东 天猫 促销",
+            "docs": "CPU 显卡 屏幕 续航 重量 接口 参数",
+            "review": "评测 优缺点 用户评价 散热 噪音",
+            "news": "新品 发布 2026 笔记本",
+            "changelog": "型号 更新 迭代 版本",
+            "github": "拆机 跑分 benchmark review",
+        }[source_type]
+        return f"{competitor} {industry} {suffix}"
+
     suffix = {
         "official": "official product positioning features",
         "pricing": "pricing business model fees",

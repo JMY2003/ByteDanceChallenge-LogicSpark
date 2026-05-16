@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 import re
 from collections import defaultdict
 
 from sqlalchemy import delete, select
 
-from app.agents.base import AgentContext, BaseAgent
+from app.agents.base import AgentContext, BaseAgent, compact_for_storage
+from app.config import should_simulate
 from app.core.ids import stable_id
 from app.core.time import iso_now, utc_now
 from app.db.models import Chunk, Claim, Competitor, Document, Evidence, Report
@@ -69,6 +72,16 @@ KNOWN_COMPETITORS = [
     "ChatGPT Search",
     "Gemini",
     "Claude",
+    "联想",
+    "ThinkBook",
+    "小新",
+    "华硕",
+    "惠普",
+    "戴尔",
+    "荣耀",
+    "机械革命",
+    "宏碁",
+    "小米",
     "HubSpot",
     "Salesforce",
     "Zoho CRM",
@@ -129,6 +142,14 @@ class IntentAgent(BaseAgent):
     async def run(self, input_data: dict, context: AgentContext) -> dict:
         project = input_data["project"]
         query = project["query"]
+        if not should_simulate(context.config):
+            try:
+                return await context.complete_json(
+                    intent_llm_prompt(project, query),
+                    self.output_schema,
+                )
+            except Exception:
+                pass
         companies = extract_companies(query)
         if project.get("max_competitors"):
             companies = companies[: int(project["max_competitors"])]
@@ -199,7 +220,7 @@ class WebSearchAgent(BaseAgent):
         for plan in plans:
             competitor = plan.get("competitor", "unknown")
             queries = [plan.get("query") or f"{competitor} official product features pricing reviews"]
-            if not context.config.offline_mode:
+            if not should_simulate(context.config):
                 queries.append(f"{competitor} user reviews security integrations recent updates")
             for query in queries:
                 result = await context.call_tool(
@@ -227,20 +248,26 @@ class WebCrawlerAgent(BaseAgent):
     async def run(self, input_data: dict, context: AgentContext) -> dict:
         search_output = input_data["dependency_outputs"].get("web_search", {})
         results = select_balanced_results(search_output.get("search_results", []), context.config.max_crawl_documents)
+        semaphore = asyncio.Semaphore(max(1, context.config.crawler_concurrency))
+
+        async def crawl_result(result: dict) -> tuple[dict, dict]:
+            async with semaphore:
+                try:
+                    crawled = await context.call_tool(
+                        "web_crawler",
+                        {
+                            "url": result["url"],
+                            "competitor": result.get("competitor", "unknown"),
+                            "source_type": result.get("source_type", "unknown"),
+                        },
+                    )
+                    return result, crawled["document"]
+                except Exception as exc:
+                    return result, fallback_document_from_failed_crawl(result, exc)
+
+        crawled_documents = await asyncio.gather(*(crawl_result(result) for result in results))
         documents: list[dict] = []
-        for result in results:
-            try:
-                crawled = await context.call_tool(
-                    "web_crawler",
-                    {
-                        "url": result["url"],
-                        "competitor": result.get("competitor", "unknown"),
-                        "source_type": result.get("source_type", "unknown"),
-                    },
-                )
-                document = crawled["document"]
-            except Exception as exc:
-                document = fallback_document_from_failed_crawl(result, exc)
+        for result, document in crawled_documents:
             doc_id = stable_id("doc", context.project_id, document["url"])
             persisted = Document(
                 id=doc_id,
@@ -592,16 +619,38 @@ class ReportWriterAgent(BaseAgent):
         analysis = all_outputs.get("analysis", {})
         quality = all_outputs.get("quality_gate", {}).get("payload", {}).get("quality_score") or compute_quality_score(competitors, evidence, claims)
         markdown = render_markdown(project, competitors, evidence, claims, analysis, quality, all_outputs)
+        llm_rewrite = {"used": False, "error": None}
+        if not should_simulate(context.config):
+            try:
+                llm_report = await context.complete_json(
+                    report_llm_prompt(project, competitors, evidence, claims, quality, markdown),
+                    {
+                        "type": "object",
+                        "properties": {
+                            "markdown": {
+                                "type": "string",
+                                "description": "Final evidence-bound Markdown report.",
+                            }
+                        },
+                        "required": ["markdown"],
+                        "additionalProperties": False,
+                    },
+                )
+                markdown = validate_llm_markdown(llm_report.get("markdown"))
+                llm_rewrite["used"] = True
+            except Exception as exc:
+                llm_rewrite["error"] = str(exc)[:500] or exc.__class__.__name__
         json_report = {
             "project_id": context.project_id,
             "summary": "Evidence-bound deep competitive intelligence report.",
             "competitors": [competitor.profile for competitor in competitors],
             "feature_matrix": analysis.get("feature_matrix", {}),
             "strategic_insights": analysis.get("strategic_insights", []),
-            "agent_outputs": {key: value for key, value in all_outputs.items() if key not in {"report_writer"}},
+            "agent_outputs": compact_for_storage({key: value for key, value in all_outputs.items() if key not in {"report_writer"}}),
             "claims": [claim_to_dict(claim) for claim in claims],
             "evidence": [evidence_to_dict(item) for item in evidence],
             "quality_score": quality,
+            "llm_rewrite": llm_rewrite,
         }
         rendered = await context.call_tool("report_renderer", {"markdown": markdown, "json_report": json_report})
 
@@ -624,6 +673,87 @@ class ReportWriterAgent(BaseAgent):
             "json_report": json_report,
             "quality_score": quality,
         }
+
+
+def intent_llm_prompt(project: dict, query: str) -> str:
+    return f"""
+Parse the user's competitive-intelligence request into structured JSON.
+
+User query:
+{query}
+
+Project settings:
+{json.dumps(project, ensure_ascii=False)}
+
+Rules:
+- Keep explicitly requested competitors in original user order.
+- Respect max_competitors.
+- Use report_type="competitive_analysis".
+- Use output_formats from project settings, or ["markdown", "html", "json"].
+- required_dimensions must include: {json.dumps(REQUIRED_DIMENSIONS, ensure_ascii=False)}.
+- needs_source_citation must be true.
+- needs_competitor_confirmation is true only when no target companies can be identified.
+"""
+
+
+def report_llm_prompt(project: dict, competitors: list[Competitor], evidence: list[Evidence], claims: list[Claim], quality: dict, markdown: str) -> str:
+    competitor_payload = [
+        {
+            "name": competitor.name,
+            "positioning": competitor.profile.get("positioning", {}),
+            "features": competitor.profile.get("features", [])[:6],
+            "pricing": competitor.profile.get("pricing", [])[:3],
+            "source_coverage": competitor.profile.get("source_coverage", []),
+        }
+        for competitor in competitors
+    ]
+    claim_payload = [claim_to_dict(claim) for claim in claims[:18]]
+    evidence_payload = [
+        {
+            "evidence_id": item.id,
+            "source_url": item.source_url,
+            "source_type": item.source_type,
+            "quote": item.quote[:240],
+            "summary": item.summary[:160],
+            "competitor": item.evidence_metadata.get("competitor", "unknown"),
+        }
+        for item in evidence[:20]
+    ]
+    return f"""
+Rewrite the existing Markdown report into a polished product-manager-facing competitive intelligence report.
+
+Hard constraints:
+- Return JSON with a single key: markdown.
+- Use the project language: {project.get("language", "zh-CN")}.
+- Preserve evidence traceability. Use only evidence_ids that appear below; never invent evidence IDs, URLs, claims, prices, certifications, or dates.
+- Keep unsupported or volatile facts cautious and mark them as needing live verification.
+- Keep these report sections where applicable: 执行摘要, 事实结论, 功能矩阵, SWOT 摘要, 战略洞察与机会地图, QA 与红队挑战, 证据附录.
+- Do not include Markdown code fences around the report.
+
+Project:
+{json.dumps(project, ensure_ascii=False)}
+
+Competitors:
+{json.dumps(competitor_payload, ensure_ascii=False)}
+
+Claims:
+{json.dumps(claim_payload, ensure_ascii=False)}
+
+Evidence:
+{json.dumps(evidence_payload, ensure_ascii=False)}
+
+Quality score:
+{json.dumps(quality, ensure_ascii=False)}
+
+Current deterministic draft:
+{markdown[:8000]}
+"""
+
+
+def validate_llm_markdown(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("LLM report response must contain a non-empty markdown string.")
+    return value.strip()
 
 
 def extract_companies(query: str) -> list[str]:
@@ -712,23 +842,26 @@ def dedupe_companies(names: list[str]) -> list[str]:
 
 
 def infer_industry(query: str) -> str:
+    lower = query.lower()
+    if any(keyword in query for keyword in ["笔记本", "电脑", "轻薄本", "游戏本", "全能本"]) or any(keyword in lower for keyword in ["laptop", "notebook"]):
+        return "laptop computer / consumer electronics"
     if "Agent" in query or "agent" in query:
         return "AI Agent infrastructure / development platform"
-    if "视频" in query or "video" in query.lower() or "生成工具" in query:
+    if "视频" in query or "video" in lower or "生成工具" in query:
         return "AI video generation / creative tools"
-    if "搜索" in query or "search" in query.lower():
+    if "搜索" in query or "search" in lower:
         return "AI search / answer engine"
-    if "项目管理" in query or "project management" in query.lower():
+    if "项目管理" in query or "project management" in lower:
         return "project management / work management SaaS"
     if "CRM" in query.upper() or "客户关系" in query or "销售" in query:
         return "CRM / customer engagement software"
-    if "网购" in query or "电商" in query or "零售" in query or "e-commerce" in query.lower():
+    if "网购" in query or "电商" in query or "零售" in query or "e-commerce" in lower:
         return "e-commerce / online retail platform"
-    if "办公" in query or "协作" in query or "productivity" in query.lower():
+    if "办公" in query or "协作" in query or "productivity" in lower:
         return "AI productivity / collaboration software"
     if "知识库" in query:
         return "AI knowledge base / knowledge management"
-    if "代码" in query or "coding" in query.lower():
+    if "代码" in query or "coding" in lower:
         return "AI coding assistant"
     return "unknown"
 

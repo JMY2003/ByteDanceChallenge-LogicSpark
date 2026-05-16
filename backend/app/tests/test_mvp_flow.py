@@ -2,7 +2,6 @@ import os
 from pathlib import Path
 
 os.environ["COMPETESCOPE_DATABASE_URL"] = "sqlite:///./test_competescope.db"
-os.environ["COMPETESCOPE_OFFLINE_MODE"] = "true"
 
 from app.config import get_settings
 

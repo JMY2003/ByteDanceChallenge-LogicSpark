@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter, defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -13,7 +14,14 @@ from app.db.session import get_db
 from app.orchestrator.executor import DAGOrchestrator, ensure_project_tasks
 from app.schemas.competitor import CompetitorListResponse
 from app.schemas.evidence import EvidenceItem, EvidenceListResponse
-from app.schemas.project import ConfirmCompetitorsRequest, ProjectCreate, ProjectCreated, ProjectStatusResponse
+from app.schemas.project import (
+    ConfirmCompetitorsRequest,
+    ProjectCreate,
+    ProjectCreated,
+    ProjectHistoryItem,
+    ProjectHistoryResponse,
+    ProjectStatusResponse,
+)
 from app.schemas.report import ExportRequest, ExportResponse, ReportEditRequest, ReportResponse
 from app.schemas.task import AgentRunResponse, DAGEdge, DAGNode, DAGResponse
 
@@ -37,6 +45,50 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
     db.commit()
     ensure_project_tasks(db, project)
     return ProjectCreated(project_id=project.id, status=project.status)
+
+
+@router.get("/history", response_model=ProjectHistoryResponse)
+def get_project_history(db: Session = Depends(get_db)) -> ProjectHistoryResponse:
+    projects = db.scalars(
+        select(Project)
+        .where(Project.status == "completed")
+        .order_by(Project.updated_at.desc())
+        .limit(30)
+    ).all()
+    if not projects:
+        return ProjectHistoryResponse(projects=[])
+
+    project_ids = [project.id for project in projects]
+    task_counts: dict[str, Counter[str]] = defaultdict(Counter)
+    for project_id, task_status in db.execute(
+        select(Task.project_id, Task.status).where(Task.project_id.in_(project_ids))
+    ):
+        task_counts[project_id][task_status] += 1
+
+    quality_scores: dict[str, dict | None] = {}
+    reports = db.scalars(select(Report).where(Report.project_id.in_(project_ids), Report.format == "markdown")).all()
+    for report in reports:
+        quality_scores[report.project_id] = report.report_metadata.get("quality_score")
+
+    completed = []
+    for project in projects:
+        counts = dict(task_counts[project.id])
+        if not counts.get("success", 0) or counts.get("failed", 0) or counts.get("running", 0) or counts.get("pending", 0):
+            continue
+        completed.append(
+            ProjectHistoryItem(
+                project_id=project.id,
+                status=project.status,
+                query=project.query,
+                mode=project.mode,
+                language=project.language,
+                created_at=project.created_at.isoformat(),
+                completed_at=project.updated_at.isoformat(),
+                task_counts=counts,
+                quality_score=quality_scores.get(project.id),
+            )
+        )
+    return ProjectHistoryResponse(projects=completed)
 
 
 @router.post("/{project_id}/run", response_model=ProjectStatusResponse)

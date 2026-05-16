@@ -28,7 +28,17 @@ npm install
 npm run dev
 ```
 
-打开 `http://localhost:3000`。默认 `COMPETESCOPE_OFFLINE_MODE=false`，系统会优先使用已配置的 Serper/Brave 搜索 API，未配置时会尝试轻量公开搜索 fallback；需要完全离线稳定演示时可设为 `true`，系统会使用内置 fixture。爬虫工具已包含 robots.txt 检查、域名级限速和访问控制边界，不绕过登录、验证码或付费墙。
+打开 `http://localhost:3000`。默认 `SIMULATIVE=True`，系统使用内置 fixture 做稳定模拟演示；在 `backend/app/config.py` 中把 `SIMULATIVE` 改为 `False` 后，系统会启用真实 API：LLM 读取 `COMPETESCOPE_LLM_API_KEY`，搜索优先读取 `COMPETESCOPE_SERPER_API_KEY` / `COMPETESCOPE_BRAVE_SEARCH_API_KEY`，未配置搜索 key 时会尝试轻量公开搜索 fallback。爬虫工具已包含 robots.txt 检查、域名级限速和访问控制边界，不绕过登录、验证码或付费墙。
+
+LLM 接口使用 OpenAI-compatible `/chat/completions` 协议，模型名在代码中固定配置为 `gpt-4o-mini`。如需切换兼容网关，可设置 `COMPETESCOPE_LLM_BASE_URL`。
+
+macOS 上可把 API key 写入 `~/.zshrc` 后重启终端或执行 `source ~/.zshrc`：
+
+```bash
+export COMPETESCOPE_LLM_API_KEY="your-llm-api-key"
+export COMPETESCOPE_SERPER_API_KEY="your-serper-api-key"
+# export COMPETESCOPE_BRAVE_SEARCH_API_KEY="your-brave-search-api-key"
+```
 
 ## Docker Compose
 
@@ -68,4 +78,3 @@ uv run pytest
 ```
 
 测试会完整验证：创建项目、运行深度 DAG、生成竞品知识库、构建 evidence、输出 Markdown/HTML/JSON 报告、QA 结果和 Agent 日志。
-test
