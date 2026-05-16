@@ -22,7 +22,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
         ...(init?.headers ?? {})
       }
     });
-  } catch (error) {
+  } catch {
     throw new Error(`无法连接后端 API：${url}。请确认 FastAPI 已启动，且 CORS 允许当前前端地址。`);
   }
   if (!response.ok) {
@@ -87,7 +87,7 @@ export async function saveReport(projectId: string, markdown: string): Promise<R
   });
 }
 
-export async function exportReport(projectId: string, format: "markdown" | "html" | "json") {
+export async function exportReport(projectId: string, format: "markdown" | "html" | "json" | "ppt_outline") {
   return apiFetch<{ filename: string; content_type: string; content: string }>(`/api/projects/${projectId}/export`, {
     method: "POST",
     body: JSON.stringify({ format })

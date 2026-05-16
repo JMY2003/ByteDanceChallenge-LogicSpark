@@ -80,7 +80,9 @@ class SourcePlanningAgent(DeepSpecializedAgent):
         competitors = outputs.get("competitor_discovery", {}).get("payload", {}).get("competitors", [])
         intent = outputs.get("intent", {})
         plan = []
-        source_types = ["official", "pricing", "docs", "review", "news"]
+        source_types = ["official", "pricing", "docs", "review", "news", "changelog"]
+        if "infrastructure" in intent.get("industry", "").lower() or "open" in intent.get("industry", "").lower():
+            source_types.append("github")
         for competitor in competitors:
             for source_type in source_types:
                 plan.append(
@@ -431,12 +433,28 @@ class FactCheckAgent(DeepSpecializedAgent):
 
     async def run(self, input_data: dict, context: AgentContext) -> dict:
         claims = list(context.db.scalars(select(Claim).where(Claim.project_id == context.project_id)).all())
+        evidence_by_id = {item.id: item for item in self.load_evidence(context)}
         issues = []
         for claim in claims:
             if claim.claim_type != "unknown" and not claim.evidence_ids:
                 issues.append({"claim_id": claim.id, "issue_type": "missing_evidence", "severity": "high", "message": "Claim has no evidence IDs."})
             if claim.confidence > 0.85 and len(claim.evidence_ids) < 2:
                 issues.append({"claim_id": claim.id, "issue_type": "overconfident_claim", "severity": "medium", "message": "High confidence needs multiple sources."})
+            weak_ids = [
+                evidence_id
+                for evidence_id in claim.evidence_ids
+                if evidence_by_id.get(evidence_id)
+                and (evidence_by_id[evidence_id].source_type in {"unverified", "crawl_failed"} or evidence_by_id[evidence_id].credibility_score < 0.35)
+            ]
+            if weak_ids and claim.claim_type in {"fact", "inference"}:
+                issues.append(
+                    {
+                        "claim_id": claim.id,
+                        "issue_type": "weak_or_unverified_evidence",
+                        "severity": "high" if claim.claim_type == "fact" else "medium",
+                        "message": f"Claim relies on weak or unverified evidence IDs: {weak_ids}.",
+                    }
+                )
         return self.pack("success", "Fact check completed.", [], {"fact_check_result": {"passed": not issues, "issues": issues}})
 
 
@@ -445,17 +463,45 @@ class CitationCheckAgent(DeepSpecializedAgent):
     description = "Check whether each citation supports its linked claim."
 
     async def run(self, input_data: dict, context: AgentContext) -> dict:
-        evidence_ids = {item.id for item in self.load_evidence(context)}
+        evidence_by_id = {item.id: item for item in self.load_evidence(context)}
+        evidence_ids = set(evidence_by_id)
         claims = list(context.db.scalars(select(Claim).where(Claim.project_id == context.project_id)).all())
         checks = []
         for claim in claims:
             missing = [item for item in claim.evidence_ids if item not in evidence_ids]
+            support_scores = [
+                semantic_support_score(claim.claim_text, evidence_by_id[evidence_id].quote, evidence_by_id[evidence_id].summary)
+                for evidence_id in claim.evidence_ids
+                if evidence_id in evidence_by_id
+            ]
+            weak_sources = [
+                evidence_id
+                for evidence_id in claim.evidence_ids
+                if evidence_id in evidence_by_id and evidence_by_id[evidence_id].source_type in {"unverified", "crawl_failed"}
+            ]
+            max_support = max(support_scores, default=0.0)
+            if missing:
+                status = "invalid_reference"
+                reason = f"Missing evidence IDs: {missing}"
+            elif weak_sources:
+                status = "weak_support"
+                reason = f"Evidence exists but is weak/unverified: {weak_sources}"
+            elif claim.claim_type != "unknown" and max_support < 0.08:
+                status = "weak_support"
+                reason = f"Low lexical-semantic overlap between claim and evidence; support_score={max_support:.2f}"
+            elif len(claim.evidence_ids) == 1 and claim.claim_type != "fact":
+                status = "weak_support"
+                reason = "Only one source supports a non-factual conclusion; add more evidence or lower confidence."
+            else:
+                status = "supported"
+                reason = f"Evidence IDs exist and claim/evidence support_score={max_support:.2f}."
             checks.append(
                 {
                     "claim_id": claim.id,
-                    "status": "invalid_reference" if missing else ("weak_support" if len(claim.evidence_ids) == 1 and claim.claim_type != "fact" else "supported"),
-                    "reason": f"Missing evidence IDs: {missing}" if missing else "Evidence IDs exist; semantic support is approximate in deterministic MVP.",
-                    "recommended_action": "add evidence or lower confidence" if missing else "keep citation and refresh live sources before external delivery",
+                    "status": status,
+                    "reason": reason,
+                    "support_score": round(max_support, 2),
+                    "recommended_action": "add evidence, refresh live source, or lower confidence" if status != "supported" else "keep citation and refresh volatile sources before external delivery",
                 }
             )
         return self.pack("success", "Citation check completed.", [], {"citation_checks": checks})
@@ -550,11 +596,20 @@ class QualityGateAgent(DeepSpecializedAgent):
         for key in ["fact_check", "citation_check", "consistency_check", "bias_detection", "red_team"]:
             payload = outputs.get(key, {}).get("payload", {})
             warnings.extend(extract_warnings(key, payload))
-        quality_score = compute_quality_score(competitors, evidence, claims, warnings)
+        relevance = compute_relevance(outputs.get("intent", {}), competitors)
+        for missing in relevance["missing_requested"]:
+            warnings.append(f"Relevance high: requested competitor not represented in output: {missing}")
+        for extra in relevance["off_topic_competitors"]:
+            warnings.append(f"Relevance medium: output competitor may be off-scope: {extra}")
+        if relevance["requested_count"] and relevance["match_ratio"] < 0.8:
+            warnings.append(f"Relevance high: only {relevance['matched_count']}/{relevance['requested_count']} requested competitors matched.")
+        if evidence and all(item.source_type in {"unverified", "crawl_failed"} for item in evidence):
+            warnings.append("Evidence high: no verified public-source content was collected; report must stay low-confidence.")
+        quality_score = compute_quality_score(competitors, evidence, claims, warnings, relevance)
         status = "pass" if quality_score["total"] >= 88 and not warnings else "pass_with_warnings"
         if quality_score["total"] < 70:
             status = "needs_revision"
-        return self.pack("success", "Quality gate completed.", [], {"quality_gate": {"status": status, "score": quality_score["total"], "warnings": warnings, "required_fixes": [] if status != "needs_revision" else warnings[:3]}, "quality_score": quality_score, "warnings": warnings, "status": status})
+        return self.pack("success", "Quality gate completed.", [], {"quality_gate": {"status": status, "score": quality_score["total"], "warnings": warnings, "required_fixes": [] if status != "needs_revision" else warnings[:5], "relevance": relevance}, "quality_score": quality_score, "warnings": warnings, "status": status})
 
 
 def collect_outputs(input_data: dict) -> dict:
@@ -564,10 +619,21 @@ def collect_outputs(input_data: dict) -> dict:
 
 
 def default_competitors(industry: str) -> list[str]:
+    lower = industry.lower()
     if "e-commerce" in industry:
         return ["京东", "阿里巴巴", "拼多多", "唯品会"]
     if "Agent" in industry:
         return ["LangChain", "LlamaIndex", "Dify", "Flowise", "CrewAI", "AutoGen"]
+    if "video" in lower:
+        return ["Runway", "Pika", "Kling", "Luma", "Synthesia", "HeyGen"]
+    if "search" in lower:
+        return ["Perplexity", "秘塔 AI 搜索", "Kimi", "ChatGPT Search"]
+    if "project management" in lower:
+        return ["Linear", "Jira", "Asana", "Monday.com", "ClickUp AI", "Trello"]
+    if "crm" in lower:
+        return ["Salesforce", "HubSpot", "Zoho CRM", "Pipedrive", "Intercom", "Zendesk"]
+    if "knowledge" in lower:
+        return ["Notion AI", "Glean", "Guru", "Confluence", "SharePoint", "飞书"]
     return ["Notion AI", "ClickUp AI", "Coda AI", "飞书", "钉钉"]
 
 
@@ -578,6 +644,8 @@ def source_query(competitor: str, source_type: str, industry: str) -> str:
         "docs": "docs API security integrations merchant rules",
         "review": "user reviews pros cons complaints",
         "news": "recent updates launch partnerships market signals",
+        "changelog": "changelog release notes latest product updates",
+        "github": "GitHub stars forks issues releases open source activity",
     }[source_type]
     return f"{competitor} {industry} {suffix}"
 
@@ -619,6 +687,76 @@ def finding(agent: str, claim_type: str, subject: str, claim: str, evidence_ids:
         "risk_level": risk_level,
         "created_by_agent": agent,
     }
+
+
+def semantic_support_score(claim_text: str, quote: str, summary: str) -> float:
+    claim_units = text_units(claim_text)
+    evidence_units = text_units(f"{quote} {summary}")
+    if not claim_units or not evidence_units:
+        return 0.0
+    overlap = claim_units & evidence_units
+    return len(overlap) / max(1, min(len(claim_units), len(evidence_units)))
+
+
+def text_units(text: str) -> set[str]:
+    lowered = text.lower()
+    ascii_tokens = {token for token in re.findall(r"[a-z0-9][a-z0-9.+_-]{1,}", lowered) if token not in STOPWORDS}
+    chinese = re.findall(r"[\u4e00-\u9fff]", text)
+    chinese_bigrams = {"".join(chinese[index : index + 2]) for index in range(max(0, len(chinese) - 1))}
+    return ascii_tokens | chinese_bigrams
+
+
+STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "unknown",
+    "current",
+    "evidence",
+    "signal",
+    "signals",
+    "analysis",
+    "competitor",
+}
+
+
+def compute_relevance(intent: dict, competitors: list[Competitor]) -> dict:
+    requested = [normalize_name(name) for name in intent.get("target_companies", []) if name]
+    output = [normalize_name(competitor.name) for competitor in competitors]
+    matched = []
+    missing = []
+    for original, normalized in zip(intent.get("target_companies", []), requested, strict=False):
+        if any(names_match(normalized, candidate) for candidate in output):
+            matched.append(original)
+        else:
+            missing.append(original)
+    off_topic = []
+    if requested:
+        for competitor in competitors:
+            normalized = normalize_name(competitor.name)
+            if not any(names_match(normalized, requested_name) for requested_name in requested):
+                off_topic.append(competitor.name)
+    requested_count = len(requested)
+    return {
+        "requested_count": requested_count,
+        "matched_count": len(matched),
+        "match_ratio": round(len(matched) / max(1, requested_count), 2) if requested_count else 1.0,
+        "missing_requested": missing,
+        "off_topic_competitors": off_topic,
+    }
+
+
+def normalize_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", name.lower())
+
+
+def names_match(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    return left == right or left in right or right in left
 
 
 def positioning_sentence(name: str, profile: dict, features: list[str]) -> str:
@@ -699,23 +837,30 @@ def extract_warnings(agent_key: str, payload: dict) -> list[str]:
     return warnings
 
 
-def compute_quality_score(competitors: list[Competitor], evidence: list[Evidence], claims: list[Claim], warnings: list[str]) -> dict:
+def compute_quality_score(competitors: list[Competitor], evidence: list[Evidence], claims: list[Claim], warnings: list[str], relevance: dict | None = None) -> dict:
     competitor_count = max(1, len(competitors))
     source_types = {item.source_type for item in evidence}
-    coverage_ratio = min(1.0, len(evidence) / (competitor_count * 4))
-    source_diversity = min(1.0, len(source_types) / 5)
-    evidence_ratio = sum(1 for claim in claims if claim.evidence_ids or claim.claim_type == "unknown") / max(1, len(claims))
-    warning_penalty = min(12, len(warnings) * 2)
+    verified_evidence = [item for item in evidence if item.source_type not in {"unverified", "crawl_failed"} and item.credibility_score >= 0.35]
+    verified_ids = {item.id for item in verified_evidence}
+    coverage_ratio = min(1.0, len(verified_evidence) / (competitor_count * 4))
+    source_diversity = min(1.0, len(source_types - {"unverified", "crawl_failed"}) / 5)
+    verified_source_ratio = len(verified_evidence) / max(1, len(evidence))
+    verified_claim_ratio = sum(
+        1 for claim in claims if claim.claim_type == "unknown" or any(evidence_id in verified_ids for evidence_id in claim.evidence_ids)
+    ) / max(1, len(claims))
+    avg_credibility = sum(item.credibility_score for item in verified_evidence) / max(1, len(verified_evidence))
+    warning_penalty = min(14, len(warnings) * 2)
+    relevance_ratio = (relevance or {}).get("match_ratio", 1.0)
+    relevance_penalty = 0 if relevance_ratio >= 0.8 else round((0.8 - relevance_ratio) * 20)
     score = {
-        "coverage": round(14 * coverage_ratio + 6 * source_diversity),
-        "evidence_strength": round(20 * evidence_ratio),
-        "citation_accuracy": max(7, 15 - warning_penalty // 2),
-        "analysis_depth": min(15, round(6 + len(claims) / max(1, competitor_count))),
+        "coverage": max(0, round((12 * coverage_ratio + 4 * source_diversity + 4 * verified_source_ratio) * relevance_ratio)),
+        "evidence_strength": round(14 * verified_claim_ratio + 6 * avg_credibility),
+        "citation_accuracy": max(0, 15 - warning_penalty // 2 - relevance_penalty // 2),
+        "analysis_depth": max(3, min(15, round((6 + len(claims) / max(1, competitor_count)) * max(0.35, verified_source_ratio)))),
         "structure": 10,
         "consistency": max(5, 10 - warning_penalty // 3),
         "readability": 5,
-        "novelty": 4,
+        "novelty": 4 if verified_source_ratio >= 0.5 else 2,
     }
     score["total"] = sum(score.values())
     return score
-

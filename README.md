@@ -28,7 +28,7 @@ npm install
 npm run dev
 ```
 
-打开 `http://localhost:3000`。默认 `COMPETESCOPE_OFFLINE_MODE=true`，系统使用离线公开资料 fixture，方便稳定测试；生产采集可关闭该开关并接入合规搜索 API。爬虫工具已包含 robots.txt 检查、域名级限速和访问控制边界，不绕过登录、验证码或付费墙。
+打开 `http://localhost:3000`。默认 `COMPETESCOPE_OFFLINE_MODE=false`，系统会优先使用已配置的 Serper/Brave 搜索 API，未配置时会尝试轻量公开搜索 fallback；需要完全离线稳定演示时可设为 `true`，系统会使用内置 fixture。爬虫工具已包含 robots.txt 检查、域名级限速和访问控制边界，不绕过登录、验证码或付费墙。
 
 ## Docker Compose
 

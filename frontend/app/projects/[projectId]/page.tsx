@@ -1,5 +1,7 @@
 import { AgentRunList } from "@/components/agent-trace/AgentRunList";
 import { DAGFlow } from "@/components/dag/DAGFlow";
+import { ProjectAutoRunner } from "@/components/ProjectAutoRunner";
+import { FeatureCoverageChart } from "@/components/report/FeatureCoverageChart";
 import { InsightRail } from "@/components/report/InsightRail";
 import { QualityPanel } from "@/components/report/QualityPanel";
 import { MetricCard } from "@/components/ui/MetricCard";
@@ -9,10 +11,12 @@ import { getAgentRuns, getDag, getEvidence, getProjectStatus, getReport } from "
 
 type PageProps = {
   params: Promise<{ projectId: string }>;
+  searchParams?: Promise<{ autorun?: string }>;
 };
 
-export default async function ProjectRunPage({ params }: PageProps) {
+export default async function ProjectRunPage({ params, searchParams }: PageProps) {
   const { projectId } = await params;
+  const queryParams = searchParams ? await searchParams : {};
   const [status, dag, runs, evidence, report] = await Promise.all([getProjectStatus(projectId), getDag(projectId), getAgentRuns(projectId), getEvidence(projectId), getReport(projectId).catch(() => null)]);
   const completed = status.task_counts.success ?? 0;
   const failed = status.task_counts.failed ?? 0;
@@ -33,7 +37,10 @@ export default async function ProjectRunPage({ params }: PageProps) {
               </div>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-steel">{status.query}</p>
             </div>
-            <ProjectNav projectId={projectId} />
+            <div className="flex flex-col items-end gap-3">
+              <ProjectNav projectId={projectId} />
+              <ProjectAutoRunner projectId={projectId} autoRun={queryParams.autorun === "1"} initialStatus={status.status} />
+            </div>
           </div>
           <div className="grid gap-3 md:grid-cols-6">
             <MetricCard label="完成节点" value={completed} tone="good" />
@@ -54,6 +61,7 @@ export default async function ProjectRunPage({ params }: PageProps) {
           </div>
           <div className="space-y-5">
             {report?.quality_score ? <QualityPanel score={report.quality_score} /> : null}
+            <FeatureCoverageChart report={report?.json_report} />
             <InsightRail report={report?.json_report} />
           </div>
         </section>

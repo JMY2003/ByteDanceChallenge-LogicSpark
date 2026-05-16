@@ -63,6 +63,8 @@ def get_project_dag(project_id: str, db: Session = Depends(get_db)) -> DAGRespon
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     tasks = ensure_project_tasks(db, project)
+    intent_task = next((task for task in tasks if task.node_id == "intent"), None)
+    needs_competitor_confirmation = bool((intent_task.output or {}).get("needs_competitor_confirmation")) if intent_task else False
     nodes = [
         DAGNode(
             id=task.node_id,
@@ -72,6 +74,7 @@ def get_project_dag(project_id: str, db: Session = Depends(get_db)) -> DAGRespon
             status=task.status,
             retry_count=task.retry_count,
             max_retries=task.max_retries,
+            human_review_required=task.node_id == "web_search" and needs_competitor_confirmation,
         )
         for task in sorted(tasks, key=lambda item: item.created_at)
     ]
@@ -158,8 +161,13 @@ def export_report(project_id: str, payload: ExportRequest, db: Session = Depends
     report = db.scalars(select(Report).where(Report.project_id == project_id, Report.format == payload.format)).first()
     if not report:
         raise HTTPException(status_code=404, detail=f"{payload.format} report not found")
-    content_type = {"markdown": "text/markdown", "html": "text/html", "json": "application/json"}.get(payload.format, "text/plain")
-    extension = "md" if payload.format == "markdown" else payload.format
+    content_type = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "json": "application/json",
+        "ppt_outline": "text/markdown",
+    }.get(payload.format, "text/plain")
+    extension = {"markdown": "md", "ppt_outline": "ppt-outline.md"}.get(payload.format, payload.format)
     return ExportResponse(
         project_id=project_id,
         format=payload.format,
@@ -244,4 +252,3 @@ def evidence_schema(item: Evidence) -> EvidenceItem:
         supports_claim_ids=item.supports_claim_ids,
         metadata=item.evidence_metadata,
     )
-

@@ -17,9 +17,16 @@ export function ReportViewer({ projectId, markdown }: { projectId: string; markd
     setMessage("已保存人工编辑版本");
   }
 
-  async function onExport(format: "markdown" | "html" | "json") {
+  async function onExport(format: "markdown" | "html" | "json" | "ppt_outline") {
     const exported = await exportReport(projectId, format);
-    setMessage(`已生成 ${exported.filename}，内容可通过 API 获取`);
+    const blob = new Blob([exported.content], { type: exported.content_type });
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = exported.filename;
+    anchor.click();
+    window.URL.revokeObjectURL(url);
+    setMessage(`已下载 ${exported.filename}`);
   }
 
   return (
@@ -36,14 +43,14 @@ export function ReportViewer({ projectId, markdown }: { projectId: string; markd
           <Save size={16} />
           保存
         </button>
-        {(["markdown", "html", "json"] as const).map((format) => (
+        {(["markdown", "html", "json", "ppt_outline"] as const).map((format) => (
           <button
             key={format}
             onClick={() => onExport(format)}
             className="inline-flex h-10 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium hover:border-signal"
           >
             <Download size={16} />
-            {format.toUpperCase()}
+            {format === "ppt_outline" ? "PPT 大纲" : format.toUpperCase()}
           </button>
         ))}
       </div>

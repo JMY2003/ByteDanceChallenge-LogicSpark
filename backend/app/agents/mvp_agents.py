@@ -49,6 +49,36 @@ KNOWN_COMPETITORS = [
     "天猫",
     "拼多多",
     "唯品会",
+    "Linear",
+    "Jira",
+    "Asana",
+    "Monday.com",
+    "Trello",
+    "Basecamp",
+    "Runway",
+    "Pika",
+    "Kling",
+    "可灵",
+    "Luma",
+    "Synthesia",
+    "HeyGen",
+    "Perplexity",
+    "秘塔 AI 搜索",
+    "秘塔",
+    "Kimi",
+    "ChatGPT Search",
+    "Gemini",
+    "Claude",
+    "HubSpot",
+    "Salesforce",
+    "Zoho CRM",
+    "Pipedrive",
+    "Intercom",
+    "Zendesk",
+    "Glean",
+    "Guru",
+    "Confluence",
+    "SharePoint",
 ]
 
 MVP_TASKS = [
@@ -177,6 +207,7 @@ class WebSearchAgent(BaseAgent):
                     {
                         "query": query,
                         "competitor": competitor,
+                        "source_type": plan.get("source_type", "mixed"),
                         "max_results": context.config.max_search_results_per_competitor,
                     },
                 )
@@ -195,18 +226,21 @@ class WebCrawlerAgent(BaseAgent):
 
     async def run(self, input_data: dict, context: AgentContext) -> dict:
         search_output = input_data["dependency_outputs"].get("web_search", {})
-        results = search_output.get("search_results", [])[: context.config.max_crawl_documents]
+        results = select_balanced_results(search_output.get("search_results", []), context.config.max_crawl_documents)
         documents: list[dict] = []
         for result in results:
-            crawled = await context.call_tool(
-                "web_crawler",
-                {
-                    "url": result["url"],
-                    "competitor": result.get("competitor", "unknown"),
-                    "source_type": result.get("source_type", "unknown"),
-                },
-            )
-            document = crawled["document"]
+            try:
+                crawled = await context.call_tool(
+                    "web_crawler",
+                    {
+                        "url": result["url"],
+                        "competitor": result.get("competitor", "unknown"),
+                        "source_type": result.get("source_type", "unknown"),
+                    },
+                )
+                document = crawled["document"]
+            except Exception as exc:
+                document = fallback_document_from_failed_crawl(result, exc)
             doc_id = stable_id("doc", context.project_id, document["url"])
             persisted = Document(
                 id=doc_id,
@@ -363,9 +397,9 @@ class EvidenceBuilderAgent(BaseAgent):
                 quote=quote,
                 summary=summarize_text(chunk.text),
                 credibility_score=credibility_score(source_type),
-                freshness_score=0.95,
-                is_primary_source=source_type in {"official", "pricing", "docs"},
-                is_potentially_outdated=document.url.startswith("offline://"),
+                freshness_score=0.25 if source_type in {"unverified", "crawl_failed"} else 0.95,
+                is_primary_source=source_type in {"official", "pricing", "docs", "changelog"},
+                is_potentially_outdated=document.url.startswith("offline://") or source_type in {"unverified", "crawl_failed"},
                 supports_claim_ids=[],
                 evidence_metadata={"competitor": competitor},
                 retrieved_at=utc_now(),
@@ -575,6 +609,13 @@ class ReportWriterAgent(BaseAgent):
         upsert_report(context, report_id, "markdown", rendered["markdown"], {"quality_score": quality})
         upsert_report(context, stable_id("report", context.project_id, "html"), "html", rendered["html"], {"quality_score": quality})
         upsert_report(context, stable_id("report", context.project_id, "json"), "json", rendered["json"], {"quality_score": quality})
+        upsert_report(
+            context,
+            stable_id("report", context.project_id, "ppt_outline"),
+            "ppt_outline",
+            render_ppt_outline(project, competitors, claims, quality),
+            {"quality_score": quality},
+        )
         context.db.commit()
         return {
             "report_id": report_id,
@@ -586,28 +627,101 @@ class ReportWriterAgent(BaseAgent):
 
 
 def extract_companies(query: str) -> list[str]:
-    found: list[str] = []
+    known = ordered_known_competitor_matches(query)
+    parsed = parse_delimited_competitors(query)
+    return dedupe_companies([*known, *parsed])[:20]
+
+
+def ordered_known_competitor_matches(query: str) -> list[str]:
+    matches: list[tuple[int, int, str]] = []
     lower_query = query.lower()
     for name in KNOWN_COMPETITORS:
-        if name.lower() in lower_query or name in query:
-            found.append(name)
-    if found:
-        return found
-    maybe_segment = re.search(r"包括([^。；\n]+)", query) or re.search(r"对比([^。；\n]+)", query)
-    if maybe_segment:
-        tokens = re.split(r"[、,，/和与]", maybe_segment.group(1))
-        cleaned = []
+        lower_name = name.lower()
+        start = lower_query.find(lower_name)
+        if start >= 0:
+            matches.append((start, start + len(name), name))
+    matches.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    accepted: list[tuple[int, int, str]] = []
+    for start, end, name in matches:
+        if any(max(start, used_start) < min(end, used_end) for used_start, used_end, _ in accepted):
+            continue
+        accepted.append((start, end, name))
+    return [name for _, _, name in sorted(accepted, key=lambda item: item[0])]
+
+
+def parse_delimited_competitors(query: str) -> list[str]:
+    segments = []
+    patterns = [
+        r"(?:包括|包含|涵盖|对比|比较|监控)\s*([^。；\n]+)",
+        r"(?:分析|研究|调研|评估)\s+([^。；\n]+?)(?:\s+在|在\s*|于\s*|的竞争|竞争格局|领域|市场|赛道|并|，并|, and|。|；|\n|$)",
+    ]
+    for pattern in patterns:
+        segments.extend(match.group(1) for match in re.finditer(pattern, query, flags=re.I))
+    if not segments and re.search(r"[、,/，]", query[:100]):
+        segments.append(query[:120])
+
+    candidates: list[str] = []
+    for segment in segments:
+        segment = re.split(r"(?:\s+在|在\s*|于\s*|的竞争|竞争格局|领域|市场|赛道|重点|并生成|生成|给我|。|；)", segment, maxsplit=1)[0]
+        if not re.search(r"[、,，/]|(?:\s+和\s+)|(?:\s+与\s+)|(?:\s+and\s+)", segment, flags=re.I):
+            continue
+        tokens = re.split(r"[、,，/]|(?:\s+和\s+)|(?:\s+与\s+)|(?:\s+and\s+)", segment, flags=re.I)
         for token in tokens:
-            value = re.sub(r"(等平台|等产品|等竞品|平台|产品|竞品|并生成.*|生成.*)$", "", token.strip()).strip()
-            if 1 < len(value) < 40:
-                cleaned.append(value)
-        return cleaned[:8]
-    return []
+            cleaned = clean_company_token(token)
+            if cleaned and is_plausible_company_name(cleaned):
+                candidates.append(cleaned)
+    return candidates
+
+
+def clean_company_token(token: str) -> str:
+    value = token.strip(" \t\n\r:：；;，,。")
+    value = re.sub(r"^(?:请|帮我|请帮我|我想|想|分析|比较|对比|研究|调研|评估|监控)\s*", "", value)
+    value = re.sub(r"(?:等平台|等产品|等工具|等竞品|等公司|等项目|等|平台|产品|工具|竞品)$", "", value).strip()
+    contextual = re.search(r"(?:产品|工具|平台|公司|竞品|玩家)\s+([A-Za-z][A-Za-z0-9 .+_-]{1,48})$", value)
+    if contextual:
+        value = contextual.group(1).strip()
+    value = re.sub(r"^(?:国内外|全球|主要|核心|头部|海外|国内|开源|商业化|AI|人工智能)\s+", "", value, flags=re.I)
+    return value.strip(" \t\n\r:：；;，,。")
+
+
+def is_plausible_company_name(value: str) -> bool:
+    if not (1 < len(value) <= 48):
+        return False
+    bad_terms = ["领域", "市场", "赛道", "视角", "报告", "格局", "不指定", "竞品分析", "价格", "用户口碑"]
+    if any(term in value for term in bad_terms):
+        return False
+    if re.fullmatch(r"(AI|SaaS|CRM|Agent|产品经理|投资人|技术)", value, flags=re.I):
+        return False
+    return bool(re.search(r"[A-Za-z0-9\u4e00-\u9fff]", value))
+
+
+def dedupe_companies(names: list[str]) -> list[str]:
+    normalized_aliases = {"可灵": "Kling", "秘塔": "秘塔 AI 搜索"}
+    result: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        value = normalized_aliases.get(name, name).strip()
+        key = re.sub(r"\s+", " ", value.lower())
+        if not key or key in seen:
+            continue
+        if any(key in existing or existing in key for existing in seen if len(key) > 2):
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
 
 
 def infer_industry(query: str) -> str:
     if "Agent" in query or "agent" in query:
         return "AI Agent infrastructure / development platform"
+    if "视频" in query or "video" in query.lower() or "生成工具" in query:
+        return "AI video generation / creative tools"
+    if "搜索" in query or "search" in query.lower():
+        return "AI search / answer engine"
+    if "项目管理" in query or "project management" in query.lower():
+        return "project management / work management SaaS"
+    if "CRM" in query.upper() or "客户关系" in query or "销售" in query:
+        return "CRM / customer engagement software"
     if "网购" in query or "电商" in query or "零售" in query or "e-commerce" in query.lower():
         return "e-commerce / online retail platform"
     if "办公" in query or "协作" in query or "productivity" in query.lower():
@@ -637,6 +751,47 @@ def chunk_text(text: str, chunk_size: int = 700, overlap: int = 80) -> list[tupl
             break
         start = max(0, end - overlap)
     return chunks
+
+
+def select_balanced_results(results: list[dict], max_documents: int) -> list[dict]:
+    if len(results) <= max_documents:
+        return results
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for result in results:
+        grouped[result.get("competitor", "unknown")].append(result)
+    competitor_count = max(1, len(grouped))
+    per_competitor = max(3, max_documents // competitor_count)
+    selected: list[dict] = []
+    for competitor in sorted(grouped):
+        selected.extend(grouped[competitor][:per_competitor])
+    if len(selected) < max_documents:
+        selected_urls = {item["url"] for item in selected}
+        for result in results:
+            if result["url"] not in selected_urls:
+                selected.append(result)
+            if len(selected) >= max_documents:
+                break
+    return selected[:max_documents]
+
+
+def fallback_document_from_failed_crawl(result: dict, exc: Exception) -> dict:
+    competitor = result.get("competitor", "unknown")
+    url = result.get("url", "unknown")
+    content = (
+        f"Crawl failed for {url}. The source was discovered for {competitor}, but its content could not be fetched "
+        f"during this run. Error: {exc}. Treat any claim that depends on this source as unverified and request "
+        "a retry or alternative source."
+    )
+    return {
+        "url": url,
+        "title": result.get("title") or f"{competitor} crawl failed",
+        "content": content,
+        "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "source_type": "crawl_failed",
+        "competitor": competitor,
+        "retrieved_at": iso_now(),
+        "metadata": {"crawl_error": str(exc), "search_query": result.get("query"), "rank": result.get("rank")},
+    }
 
 
 def build_profile(project_id: str, competitor: str, docs: list[dict]) -> dict:
@@ -696,6 +851,11 @@ def extract_features(project_id: str, competitor: str, text: str) -> list[dict]:
         ("Subsidy / low-price engine", "pricing", ["低价", "补贴", "百亿补贴", "性价比", "团购"]),
         ("Brand discount retail", "commerce", ["品牌特卖", "折扣", "限时特卖"]),
         ("Membership / retention", "growth", ["会员", "复购", "用户心智"]),
+        ("Timeline / task planning", "project_management", ["project management", "任务", "issue", "sprint", "roadmap", "timeline", "kanban"]),
+        ("AI video generation", "creative_ai", ["video", "视频", "text-to-video", "生成视频", "motion"]),
+        ("AI search answers", "search", ["search", "搜索", "answer engine", "citation", "答案"]),
+        ("Sales pipeline", "crm", ["crm", "pipeline", "sales", "销售线索", "客户"]),
+        ("Customer support automation", "customer_engagement", ["support", "客服", "工单", "ticket", "conversation"]),
     ]
     features = []
     for name, category, keywords in candidates:
@@ -838,6 +998,14 @@ def extract_technical_signals(text: str) -> list[dict]:
 
 
 def infer_product_category(text: str) -> str:
+    if re.search(r"video|视频|text-to-video|生成视频|creative", text, re.I):
+        return "AI video generation / creative tools"
+    if re.search(r"search|搜索|answer engine|答案|citation", text, re.I):
+        return "AI search / answer engine"
+    if re.search(r"project management|roadmap|issue|sprint|kanban|项目管理", text, re.I):
+        return "project management / work management SaaS"
+    if re.search(r"crm|sales|pipeline|客户|销售", text, re.I):
+        return "CRM / customer engagement software"
     if re.search(r"电商|零售|商家|物流|特卖|补贴|平台佣金", text):
         return "e-commerce / retail platform"
     if re.search(r"docs|workspace|知识库|协同办公|documents|project", text, re.I):
@@ -875,7 +1043,10 @@ def credibility_score(source_type: str) -> float:
         "github": 0.82,
         "review": 0.7,
         "news": 0.72,
+        "changelog": 0.8,
         "third_party": 0.65,
+        "unverified": 0.25,
+        "crawl_failed": 0.15,
     }.get(source_type, 0.5)
 
 
@@ -959,10 +1130,12 @@ def evidence_to_dict(evidence: Evidence) -> dict:
 
 def compute_quality_score(competitors: list[Competitor], evidence: list[Evidence], claims: list[Claim]) -> dict:
     competitor_count = max(1, len(competitors))
-    coverage_ratio = min(1.0, len(evidence) / (competitor_count * 3))
-    evidence_ratio = sum(1 for claim in claims if claim.evidence_ids) / max(1, len(claims))
+    verified_evidence = [item for item in evidence if item.source_type not in {"unverified", "crawl_failed"} and item.credibility_score >= 0.35]
+    verified_ids = {item.id for item in verified_evidence}
+    coverage_ratio = min(1.0, len(verified_evidence) / (competitor_count * 3))
+    evidence_ratio = sum(1 for claim in claims if any(evidence_id in verified_ids for evidence_id in claim.evidence_ids)) / max(1, len(claims))
     citation_accuracy = 1.0 if all(claim.evidence_ids or claim.claim_type == "unknown" for claim in claims) else 0.5
-    analysis_depth = min(1.0, len(claims) / max(1, competitor_count + 2))
+    analysis_depth = min(1.0, len(claims) / max(1, competitor_count + 2)) * (len(verified_evidence) / max(1, len(evidence)))
     consistency = 1.0 if not any(claim.claim_type != "unknown" and not claim.evidence_ids for claim in claims) else 0.6
     score = {
         "coverage": round(20 * coverage_ratio),
@@ -993,6 +1166,7 @@ def render_markdown(
     bias = agent_outputs.get("bias_detection", {}).get("payload", {})
     swot = agent_outputs.get("swot", {}).get("payload", {})
     strategic = agent_outputs.get("strategic_insight", {}).get("payload", {})
+    project_id = project.get("project_id", "")
     lines = [
         f"# CompeteScope AI 竞品分析报告",
         "",
@@ -1011,23 +1185,23 @@ def render_markdown(
         "",
     ]
     top_claims = [claim for claim in claims if claim.claim_type in {"inference", "recommendation", "opportunity"}][:6]
-    lines.extend(render_claim_lines(top_claims))
+    lines.extend(render_claim_lines(top_claims, project_id))
     lines.extend([
         "## 事实结论",
         "",
     ])
     facts = [claim for claim in claims if claim.claim_type in {"fact", "unknown"}]
-    lines.extend(render_claim_lines(facts))
+    lines.extend(render_claim_lines(facts, project_id))
     lines.extend(["", "## 推断", ""])
-    lines.extend(render_claim_lines([claim for claim in claims if claim.claim_type == "inference"]))
+    lines.extend(render_claim_lines([claim for claim in claims if claim.claim_type == "inference"], project_id))
     lines.extend(["", "## 建议", ""])
-    lines.extend(render_claim_lines([claim for claim in claims if claim.claim_type == "recommendation"]))
+    lines.extend(render_claim_lines([claim for claim in claims if claim.claim_type == "recommendation"], project_id))
     lines.extend(["", "## 战略洞察与机会地图", ""])
     for insight in strategic.get("strategic_insights", []):
         lines.append(
             f"- **{insight.get('type', 'insight')}**：{insight.get('claim', 'unknown')} "
             f"[confidence: {insight.get('confidence', 0):.2f}; risk: {insight.get('risk_level', 'medium')}; "
-            f"证据: {', '.join(insight.get('evidence_ids', [])) or 'unknown'}]"
+            f"证据: {citation_list(insight.get('evidence_ids', []), project_id)}]"
         )
     if not strategic.get("strategic_insights"):
         lines.append("- unknown：当前证据不足以形成额外战略洞察。")
@@ -1042,7 +1216,7 @@ def render_markdown(
                 f"### {competitor.name}",
                 "",
                 f"- 定位：{profile.get('positioning', {}).get('short_summary', 'unknown')} "
-                f"[证据: {', '.join(profile.get('positioning', {}).get('evidence_ids', [])) or 'unknown'}]",
+                f"[证据: {citation_list(profile.get('positioning', {}).get('evidence_ids', []), project_id)}]",
                 f"- 功能信号：{feature_names}",
                 f"- 价格信号：{pricing_text}",
                 f"- 信息源覆盖：{', '.join(profile.get('source_coverage', [])) or 'unknown'}",
@@ -1060,7 +1234,7 @@ def render_markdown(
             for competitor in competitor_names:
                 item = values.get(competitor, {})
                 evidence_ids = item.get("evidence_ids", [])
-                cells.append(("支持" if item.get("support") else "unknown") + (f" ({', '.join(evidence_ids)})" if evidence_ids else ""))
+                cells.append(("支持" if item.get("support") else "unknown") + (f" ({citation_list(evidence_ids, project_id)})" if evidence_ids else ""))
             lines.append("| " + feature + " | " + " | ".join(cells) + " |")
     else:
         lines.append("当前证据不足，功能矩阵为 unknown。")
@@ -1072,7 +1246,7 @@ def render_markdown(
         for label, key in [("Strengths", "strengths"), ("Weaknesses", "weaknesses"), ("Opportunities", "opportunities"), ("Threats", "threats")]:
             values = block.get(key, [])
             text = "; ".join(
-                f"{item.get('point', 'unknown')} ({', '.join(item.get('evidence_ids', [])) or 'unknown'})"
+                f"{item.get('point', 'unknown')} ({citation_list(item.get('evidence_ids', []), project_id)})"
                 for item in values[:3]
             ) or "unknown"
             lines.append(f"- {label}: {text}")
@@ -1110,7 +1284,7 @@ def render_markdown(
     )
     for item in evidence:
         lines.append(
-            f"- `{item.id}`: {item.source_title} | {item.source_url} | "
+            f"- `{item.id}`: [{item.source_title}]({item.source_url}) | "
             f"可信度 {item.credibility_score:.2f} | 新鲜度 {item.freshness_score:.2f} | 摘要：{item.summary}"
         )
     lines.extend(
@@ -1118,24 +1292,59 @@ def render_markdown(
             "",
             "## Agent 执行说明",
             "",
-            "本报告由 IntentAgent、PlannerAgent、WebSearchAgent、WebCrawlerAgent、SchemaExtractionAgent、EvidenceBuilderAgent、AnalysisAgent 和 ReportWriterAgent 顺序生成。"
+            "本报告由 IntentAgent、PlannerAgent、采集/清洗/抽取 Agent、多维分析 Agent、QA Agent、RedTeamAgent、QualityGateAgent 和 ReportWriterAgent 生成。"
             "MVP 默认使用离线 fixture 以便本地稳定测试；生产模式应配置合规搜索 API，并保持 robots.txt 检查、速率限制和访问控制合规。",
         ]
     )
     return "\n".join(lines)
 
 
-def render_claim_lines(claims: list[Claim]) -> list[str]:
+def render_claim_lines(claims: list[Claim], project_id: str = "") -> list[str]:
     if not claims:
         return ["- unknown：当前没有足够证据生成该类结论。"]
     lines = []
     for claim in claims:
-        evidence_text = ", ".join(claim.evidence_ids) if claim.evidence_ids else "unknown"
+        evidence_text = citation_list(claim.evidence_ids, project_id)
         lines.append(
             f"- **{claim.claim_type}**：{claim.claim_text} "
             f"[confidence: {claim.confidence:.2f}; risk: {claim.risk_level}; 证据: {evidence_text}]"
         )
     return lines
+
+
+def render_ppt_outline(project: dict, competitors: list[Competitor], claims: list[Claim], quality: dict) -> str:
+    insight_claims = [claim for claim in claims if claim.claim_type in {"inference", "recommendation", "opportunity"}][:5]
+    fact_claims = [claim for claim in claims if claim.claim_type == "fact"][:5]
+    lines = [
+        "# PPT 大纲：CompeteScope AI 竞品分析",
+        "",
+        "## Slide 1: 任务与范围",
+        f"- 任务：{project['query']}",
+        f"- 竞品数量：{len(competitors)}",
+        f"- 质量评分：{quality['total']}/100",
+        "",
+        "## Slide 2: 竞品版图",
+        *[f"- {competitor.name}: {competitor.profile.get('positioning', {}).get('short_summary', 'unknown')}" for competitor in competitors[:8]],
+        "",
+        "## Slide 3: 关键事实",
+        *[f"- {claim.claim_text} ({', '.join(claim.evidence_ids) or 'unknown'})" for claim in fact_claims],
+        "",
+        "## Slide 4: 机会与风险",
+        *[f"- {claim.claim_text} | confidence={claim.confidence:.2f}" for claim in insight_claims],
+        "",
+        "## Slide 5: 推荐行动",
+        "- 补充最新价格、第三方评价和最近 90 天产品更新。",
+        "- 对低置信度结论降级展示，避免作为强事实进入决策。",
+    ]
+    return "\n".join(lines)
+
+
+def citation_list(evidence_ids: list[str], project_id: str = "") -> str:
+    if not evidence_ids:
+        return "unknown"
+    if not project_id:
+        return ", ".join(evidence_ids)
+    return ", ".join(f"[{evidence_id}](/projects/{project_id}/evidence/{evidence_id})" for evidence_id in evidence_ids)
 
 
 def upsert_report(context: AgentContext, report_id: str, format_: str, content: str, metadata: dict) -> None:

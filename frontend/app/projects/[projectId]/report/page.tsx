@@ -1,4 +1,5 @@
 import { FileText } from "lucide-react";
+import { FeatureCoverageChart } from "@/components/report/FeatureCoverageChart";
 import { InsightRail } from "@/components/report/InsightRail";
 import { QualityPanel } from "@/components/report/QualityPanel";
 import { ReportViewer } from "@/components/report/ReportViewer";
@@ -35,6 +36,7 @@ export default async function ReportPage({ params }: PageProps) {
           </div>
           <div className="space-y-5">
             {report.quality_score ? <QualityPanel score={report.quality_score} /> : null}
+            <FeatureCoverageChart report={report.json_report} />
             <InsightRail report={report.json_report} />
           </div>
         </section>

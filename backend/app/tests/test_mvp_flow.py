@@ -103,3 +103,59 @@ def test_ecommerce_query_uses_domain_competitors_and_deep_report_sections() -> N
         assert "e-commerce" in report["json_report"]["agent_outputs"]["intent"]["industry"]
         assert "## 战略洞察与机会地图" in report["markdown"]
         assert "## QA 与红队挑战" in report["markdown"]
+
+
+def test_prompt_variants_keep_requested_competitors_in_scope() -> None:
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/projects",
+            json={
+                "query": "请比较 Linear、Jira、Asana、Monday.com 在项目管理 SaaS 里的产品定位、定价和用户口碑。",
+                "mode": "deep",
+                "language": "zh-CN",
+                "output_formats": ["markdown", "html", "json"],
+                "max_competitors": 8,
+                "enable_deep_review": True,
+            },
+        )
+        assert created.status_code == 200, created.text
+        project_id = created.json()["project_id"]
+        run = client.post(f"/api/projects/{project_id}/run")
+        assert run.status_code == 200, run.text
+
+        competitors = client.get(f"/api/projects/{project_id}/competitors").json()["competitors"]
+        names = {competitor["name"] for competitor in competitors}
+        assert names == {"Linear", "Jira", "Asana", "Monday.com"}
+        assert all({"official", "pricing", "review"}.issubset(set(competitor["source_coverage"])) for competitor in competitors)
+
+        report = client.get(f"/api/projects/{project_id}/report").json()
+        gate = report["json_report"]["agent_outputs"]["quality_gate"]["payload"]["quality_gate"]
+        assert gate["relevance"]["match_ratio"] == 1.0
+        assert report["quality_score"]["total"] >= 75
+
+
+def test_unknown_competitors_do_not_get_overconfident_quality_score() -> None:
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/projects",
+            json={
+                "query": "请比较 AcmeFoo、BetaBar 在垂直 SaaS 市场里的竞争格局。",
+                "mode": "deep",
+                "language": "zh-CN",
+                "output_formats": ["markdown", "html", "json"],
+                "max_competitors": 4,
+                "enable_deep_review": True,
+            },
+        )
+        assert created.status_code == 200, created.text
+        project_id = created.json()["project_id"]
+        run = client.post(f"/api/projects/{project_id}/run")
+        assert run.status_code == 200, run.text
+
+        competitors = client.get(f"/api/projects/{project_id}/competitors").json()["competitors"]
+        assert {competitor["name"] for competitor in competitors} == {"AcmeFoo", "BetaBar"}
+
+        report = client.get(f"/api/projects/{project_id}/report").json()
+        gate = report["json_report"]["agent_outputs"]["quality_gate"]["payload"]["quality_gate"]
+        assert gate["status"] == "needs_revision"
+        assert report["quality_score"]["total"] < 70

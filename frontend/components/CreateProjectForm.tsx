@@ -3,7 +3,7 @@
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Play, Sparkles, Wand2 } from "lucide-react";
-import { createProject, runProject } from "@/lib/api";
+import { createProject } from "@/lib/api";
 
 const examples = [
   "请分析 AI 办公协作领域的竞品，包括 Notion AI、ClickUp AI、Coda AI、飞书、钉钉，并生成产品经理视角报告。",
@@ -34,8 +34,7 @@ export function CreateProjectForm() {
         max_competitors: maxCompetitors,
         enable_deep_review: deepReview
       });
-      await runProject(project.project_id);
-      router.push(`/projects/${project.project_id}`);
+      router.push(`/projects/${project.project_id}?autorun=1`);
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建失败");
