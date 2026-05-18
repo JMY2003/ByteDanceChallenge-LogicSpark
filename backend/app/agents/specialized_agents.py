@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 from collections import Counter, defaultdict
 from typing import Any
 
@@ -57,22 +58,42 @@ class CompetitorDiscoveryAgent(DeepSpecializedAgent):
         max_count = int(project.get("max_competitors") or 6)
         explicit_competitors = normalize_competitor_names(intent.get("target_companies") or [], max_count)
         llm_details: list[dict[str, Any]] = []
-        fallback_reason = ""
 
-        competitors = explicit_competitors
-        if not competitors and not should_simulate(context.config):
-            try:
-                llm_payload = await context.complete_json(
-                    competitor_discovery_prompt(project, intent, max_count),
+        if should_simulate(context.config):
+            competitors = explicit_competitors
+            if not competitors:
+                competitors = normalize_competitor_names(default_competitors(intent.get("industry", "unknown")), max_count)
+        elif explicit_competitors:
+            llm_payload = await context.complete_json(
+                explicit_competitor_validation_prompt(project, intent, explicit_competitors),
+                COMPETITOR_DISCOVERY_SCHEMA,
+                max_tokens=2400,
+            )
+            llm_details = normalize_competitor_details(llm_payload.get("competitor_details") or [], explicit_competitors)
+            competitors = explicit_competitors
+        else:
+            llm_payload = await context.complete_json(
+                competitor_discovery_prompt(project, intent, max_count),
+                COMPETITOR_DISCOVERY_SCHEMA,
+                max_tokens=2600,
+            )
+            competitors = normalize_competitor_names(llm_payload.get("competitors") or [], max_count)
+            llm_details = normalize_competitor_details(llm_payload.get("competitor_details") or [], competitors)
+            if should_refine_to_product_level(project, intent, competitors):
+                refined_payload = await context.complete_json(
+                    product_level_refinement_prompt(project, intent, competitors, max_count),
                     COMPETITOR_DISCOVERY_SCHEMA,
+                    max_tokens=2600,
                 )
-                competitors = normalize_competitor_names(llm_payload.get("competitors") or [], max_count)
-                llm_details = normalize_competitor_details(llm_payload.get("competitor_details") or [], competitors)
-            except Exception as exc:
-                fallback_reason = str(exc)
+                refined_competitors = normalize_competitor_names(refined_payload.get("competitors") or [], max_count)
+                if refined_competitors:
+                    competitors = refined_competitors
+                    llm_details = normalize_competitor_details(refined_payload.get("competitor_details") or [], competitors)
+            validate_discovered_competitors(project, intent, competitors, max_count)
 
         if not competitors:
             competitors = normalize_competitor_names(default_competitors(intent.get("industry", "unknown")), max_count)
+        validate_competitor_names(competitors)
 
         details = [
             {
@@ -89,8 +110,6 @@ class CompetitorDiscoveryAgent(DeepSpecializedAgent):
             "competitor_details": details,
             "needs_human_confirmation": not bool(explicit_competitors),
         }
-        if fallback_reason:
-            payload["discovery_fallback_reason"] = fallback_reason
         return self.pack(
             "success",
             f"Identified {len(competitors)} competitors for downstream source planning.",
@@ -107,6 +126,23 @@ class SourcePlanningAgent(DeepSpecializedAgent):
         outputs = collect_outputs(input_data)
         competitors = outputs.get("competitor_discovery", {}).get("payload", {}).get("competitors", [])
         intent = outputs.get("intent", {})
+        if not competitors:
+            raise ValueError("SourcePlanningAgent requires competitors from CompetitorDiscoveryAgent.")
+        if not should_simulate(context.config):
+            llm_payload = await context.complete_json(
+                source_planning_prompt(input_data.get("project", {}), intent, competitors),
+                SOURCE_PLANNING_SCHEMA,
+                max_tokens=3400,
+            )
+            plan = normalize_source_plan(llm_payload.get("source_plan", []), competitors)
+            validate_source_plan(plan, competitors)
+            return self.pack(
+                "success",
+                f"Planned {len(plan)} public-source searches with LLM domain-aware queries.",
+                [],
+                {"source_plan": plan, "llm_used": True},
+            )
+
         plan = []
         source_types = ["official", "pricing", "docs", "review", "news", "changelog"]
         if "infrastructure" in intent.get("industry", "").lower() or "open" in intent.get("industry", "").lower():
@@ -121,7 +157,7 @@ class SourcePlanningAgent(DeepSpecializedAgent):
                         "priority": "high" if source_type in {"official", "pricing"} else "medium",
                     }
                 )
-        return self.pack("success", f"Planned {len(plan)} public-source searches.", [], {"source_plan": plan})
+        return self.pack("success", f"Planned {len(plan)} simulated public-source searches.", [], {"source_plan": plan, "llm_used": False})
 
 
 class DocumentCleanerAgent(DeepSpecializedAgent):
@@ -262,6 +298,15 @@ class PricingAnalysisAgent(DeepSpecializedAgent):
                     "medium" if price_signal == "unknown" else "low",
                 )
             )
+        if any("laptop" in competitor.profile.get("product_category", "") for competitor in competitors):
+            insights = [
+                {
+                    "claim": "笔记本价位档分析最需要实时校验电商到手价、配置版本、售后政策和第三方评测数据。",
+                    "confidence": 0.72,
+                    "evidence_ids": [item.id for item in evidence[:5]],
+                }
+            ]
+            return self.pack("success", "Pricing analysis completed with live-verification flags.", flatten_ids(table), {"pricing_table": table, "insights": insights, "findings": findings})
         insights = [
             {
                 "claim": "价格与收费项是当前报告最需要实时刷新验证的维度，尤其是佣金、广告、履约或 AI 附加收费。",
@@ -600,7 +645,13 @@ class RedTeamAgent(DeepSpecializedAgent):
                         "suggested_fix": "补充官方、价格、用户评价和新闻至少三类来源。",
                     }
                 )
-            if "pricing" not in source_types and "third_party" not in source_types:
+            pricing = competitor.profile.get("pricing", [])
+            has_price_signal = any(
+                item.get("price") and item.get("price") not in {"unknown", "needs live price verification"}
+                for item in pricing
+                if isinstance(item, dict)
+            )
+            if not has_price_signal and "pricing" not in source_types and "third_party" not in source_types:
                 challenges.append(
                     {
                         "challenge": f"{competitor.name} 缺少价格/商业化来源，定价策略分析可能偏弱。",
@@ -624,6 +675,28 @@ class QualityGateAgent(DeepSpecializedAgent):
         for key in ["fact_check", "citation_check", "consistency_check", "bias_detection", "red_team"]:
             payload = outputs.get(key, {}).get("payload", {})
             warnings.extend(extract_warnings(key, payload))
+        analysis = outputs.get("analysis", {})
+        for gap in analysis.get("evidence_gaps", []):
+            severity = gap.get("severity", "medium")
+            if severity in {"high", "medium"}:
+                warnings.append(f"Evidence {severity}: {gap.get('competitor', 'unknown')} - {gap.get('gap', 'unknown')}")
+        if not analysis.get("feature_matrix"):
+            warnings.append("Analysis high: feature/capability matrix is empty.")
+        if not analysis.get("competitor_cards"):
+            warnings.append("Analysis high: competitor summary cards are empty.")
+
+        grouped = self.evidence_by_competitor(evidence)
+        for competitor in competitors:
+            items = grouped.get(competitor.name, [])
+            usable = [
+                item
+                for item in items
+                if item.source_type != "crawl_failed" and item.credibility_score >= 0.35 and "Crawl failed for" not in item.quote
+            ]
+            if len(usable) < 2:
+                warnings.append(f"Evidence high: {competitor.name} has fewer than 2 usable evidence items.")
+            if items and {item.source_type for item in items} <= {"search_snippet", "unverified", "crawl_failed"}:
+                warnings.append(f"Evidence high: {competitor.name} relies only on weak search snippets or unverified fallbacks.")
         relevance = compute_relevance(outputs.get("intent", {}), competitors)
         for missing in relevance["missing_requested"]:
             warnings.append(f"Relevance high: requested competitor not represented in output: {missing}")
@@ -633,11 +706,64 @@ class QualityGateAgent(DeepSpecializedAgent):
             warnings.append(f"Relevance high: only {relevance['matched_count']}/{relevance['requested_count']} requested competitors matched.")
         if evidence and all(item.source_type in {"unverified", "crawl_failed"} for item in evidence):
             warnings.append("Evidence high: no verified public-source content was collected; report must stay low-confidence.")
+        runtime_fallback_warnings: list[str] = []
+        if not should_simulate(context.config):
+            runtime_fallback_warnings = collect_runtime_fallback_warnings(outputs, competitors)
+            for warning in runtime_fallback_warnings:
+                if warning not in warnings:
+                    warnings.append(warning)
+        ai_review = {"used": False, "error": None}
+        if not should_simulate(context.config):
+            review = await context.complete_json(
+                quality_review_prompt(input_data.get("project", {}), outputs.get("intent", {}), competitors, analysis, warnings),
+                QUALITY_REVIEW_SCHEMA,
+                max_tokens=2400,
+            )
+            ai_review = review | {"used": True, "error": None}
+            for warning in review.get("warnings", []):
+                if warning not in warnings:
+                    warnings.append(warning)
+            if review.get("domain_mismatch"):
+                warnings.append("Domain high: profile dimensions do not match the user's requested category.")
         quality_score = compute_quality_score(competitors, evidence, claims, warnings, relevance)
         status = "pass" if quality_score["total"] >= 88 and not warnings else "pass_with_warnings"
         if quality_score["total"] < 70:
             status = "needs_revision"
-        return self.pack("success", "Quality gate completed.", [], {"quality_gate": {"status": status, "score": quality_score["total"], "warnings": warnings, "required_fixes": [] if status != "needs_revision" else warnings[:5], "relevance": relevance}, "quality_score": quality_score, "warnings": warnings, "status": status})
+        if ai_review.get("suggested_status") == "needs_revision":
+            status = "needs_revision"
+        if runtime_fallback_warnings:
+            status = "needs_revision"
+        required_fixes = ai_review.get("required_fixes", []) if isinstance(ai_review.get("required_fixes"), list) else []
+        if status == "needs_revision" and not required_fixes:
+            required_fixes = warnings[:5]
+        if runtime_fallback_warnings:
+            fallback_fix = "重新运行失败的 LLM 环节；fallback 结果只能用于调试，不能作为正式竞品分析报告。"
+            if fallback_fix not in required_fixes:
+                required_fixes.insert(0, fallback_fix)
+        if not should_simulate(context.config):
+            critical_failures = critical_quality_failures(input_data.get("project", {}), competitors, evidence, claims, quality_score, warnings, ai_review)
+            if critical_failures:
+                raise ValueError("QualityGateAgent blocked report generation: " + " | ".join(critical_failures[:8]))
+        return self.pack(
+            "success",
+            "Quality gate completed.",
+            [],
+            {
+                "quality_gate": {
+                    "status": status,
+                    "score": quality_score["total"],
+                    "warnings": warnings,
+                    "required_fixes": required_fixes,
+                    "relevance": relevance,
+                    "ai_review": ai_review,
+                    "runtime_fallback_warnings": runtime_fallback_warnings,
+                },
+                "quality_score": quality_score,
+                "warnings": warnings,
+                "status": status,
+                "runtime_fallback_warnings": runtime_fallback_warnings,
+            },
+        )
 
 
 def collect_outputs(input_data: dict) -> dict:
@@ -671,6 +797,136 @@ COMPETITOR_DISCOVERY_SCHEMA = {
 }
 
 
+SOURCE_PLANNING_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "source_plan": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "competitor": {"type": "string"},
+                    "source_type": {"type": "string"},
+                    "query": {"type": "string"},
+                    "priority": {"type": "string"},
+                },
+                "required": ["competitor", "source_type", "query"],
+                "additionalProperties": True,
+            },
+        }
+    },
+    "required": ["source_plan"],
+    "additionalProperties": False,
+}
+
+
+def source_planning_prompt(project: dict, intent: dict, competitors: list[str]) -> str:
+    return f"""
+Plan web searches for a competitive intelligence task.
+
+Project:
+{project}
+
+Parsed intent:
+{intent}
+
+Competitors:
+{competitors}
+
+Rules:
+- Return 4 to 6 searches per competitor.
+- Queries must be domain-specific and search-friendly.
+- Include official product/spec pages, current price/channel pages, third-party reviews/comparisons, user feedback, and recent news/update sources when appropriate.
+- source_type must be one of: official, pricing, docs, review, news, changelog, github, mixed.
+- For phones, use terms like 官方 参数 价格 影像 续航 评测 用户评价 系统生态 6000元.
+- For laptops, use terms like 官方 参数 配置 价格 屏幕 续航 散热 评测.
+- For software/SaaS, use official product, pricing, docs, reviews, changelog, security/integration queries.
+- Do not use irrelevant software words for hardware categories.
+"""
+
+
+def normalize_source_plan(values: list[Any], competitors: list[str]) -> list[dict[str, Any]]:
+    competitor_names = {name.casefold(): name for name in competitors}
+    plan: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        competitor = competitor_names.get(str(value.get("competitor", "")).casefold())
+        query = normalize_text(str(value.get("query", "")))
+        if not competitor or not query:
+            continue
+        key = (competitor.casefold(), query.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        plan.append(
+            {
+                "competitor": competitor,
+                "source_type": normalize_source_type(str(value.get("source_type", "mixed"))),
+                "query": query[:240],
+                "priority": str(value.get("priority", "medium")) if value.get("priority") else "medium",
+            }
+        )
+    return plan[: max(1, len(competitors)) * 6]
+
+
+def normalize_source_type(value: str) -> str:
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "spec": "docs",
+        "specs": "docs",
+        "specification": "docs",
+        "specifications": "docs",
+        "official_spec": "official",
+        "official_specs": "official",
+        "official_page": "official",
+        "official_product": "official",
+        "official_spec_pricing": "official",
+        "official_specs_pricing": "official",
+        "official_price": "pricing",
+        "product_page": "official",
+        "official": "official",
+        "price": "pricing",
+        "pricing": "pricing",
+        "pricing_channel": "pricing",
+        "channel_pricing": "pricing",
+        "current_pricing_channel": "pricing",
+        "latest_pricing_channel": "pricing",
+        "commerce": "pricing",
+        "ecommerce": "pricing",
+        "review": "review",
+        "reviews": "review",
+        "comparison": "review",
+        "third_party_review": "review",
+        "third_party_reviews": "review",
+        "user_review": "review",
+        "user_reviews": "review",
+        "news": "news",
+        "market_news": "news",
+        "media_news": "news",
+        "update": "changelog",
+        "updates": "changelog",
+        "changelog": "changelog",
+        "forum": "review",
+        "user_feedback": "review",
+        "social": "review",
+        "community": "review",
+        "ecosystem_experience": "review",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    if "pricing" in normalized or "price" in normalized or "channel" in normalized:
+        return "pricing"
+    if "official" in normalized or "spec" in normalized or "product" in normalized:
+        return "official"
+    if "review" in normalized or "feedback" in normalized or "experience" in normalized or "forum" in normalized:
+        return "review"
+    if "news" in normalized or "market" in normalized:
+        return "news"
+    return normalized or "mixed"
+
+
 def competitor_discovery_prompt(project: dict, intent: dict, max_count: int) -> str:
     return f"""
 Choose suitable competitors for a competitive-intelligence task.
@@ -685,9 +941,131 @@ Rules:
 - Return exactly {max_count} competitors when the market has enough credible options; otherwise return as many as are genuinely relevant.
 - Choose real companies, brands, product lines, or platforms that users would actually compare in this category.
 - If the category includes a price segment or geography, respect it.
+- For hardware, consumer electronics, cars, appliances, phones, laptops, or other concrete products, prefer product-line or SKU-level competitors instead of umbrella brand names. Example: use "iPhone 15" or "Huawei Mate 60", not only "Apple" or "Huawei".
+- If the user asks a price band, choose competitors that actually sit near that price band or are commonly cross-shopped after channel discounts. Avoid products clearly outside the band unless the reason explicitly explains why they are still a reference point.
 - Keep names concise and search-friendly. Chinese names are acceptable for Chinese-market products.
 - Do not include generic categories, explanations, or invented brands in the competitors array.
 """
+
+
+def explicit_competitor_validation_prompt(project: dict, intent: dict, competitors: list[str]) -> str:
+    return f"""
+Validate and enrich explicitly requested competitors for a competitive-intelligence task.
+
+Project:
+{project}
+
+Parsed intent:
+{intent}
+
+Explicit competitors:
+{competitors}
+
+Rules:
+- Keep the same competitor names; do not add or remove names.
+- Return competitor_details with a concise reason explaining why each explicit competitor fits or what needs verification.
+- If a name is too broad for a product-level hardware task, mention the product-level ambiguity in reason but do not replace the explicit user choice.
+- Return JSON only.
+"""
+
+
+def product_level_refinement_prompt(project: dict, intent: dict, competitors: list[str], max_count: int) -> str:
+    return f"""
+The previous competitor discovery returned overly broad brand/company names for a product-level competitive analysis.
+
+Project:
+{project}
+
+Parsed intent:
+{intent}
+
+Previous competitors:
+{competitors}
+
+Refine the competitors to product-line or SKU-level names that users would directly compare.
+
+Rules:
+- Return exactly {max_count} product-level competitors when possible.
+- Keep the user's category, price band, geography and audience constraints.
+- Prefer concrete product families/models, not umbrella brands.
+- If a brand has multiple relevant models, choose the model line most commonly cross-shopped in the requested price band.
+- Do not invent products. If exact current pricing is uncertain, choose models plausibly near the band and explain uncertainty in competitor_details.reason.
+"""
+
+
+def should_refine_to_product_level(project: dict, intent: dict, competitors: list[str]) -> bool:
+    task_text = f"{project.get('query', '')} {intent.get('industry', '')}".casefold()
+    hardware_terms = [
+        "手机",
+        "智能手机",
+        "phone",
+        "smartphone",
+        "笔记本",
+        "laptop",
+        "notebook",
+        "电脑",
+        "consumer electronics",
+        "hardware",
+        "汽车",
+        "car",
+        "ev",
+        "家电",
+        "电视",
+        "耳机",
+        "相机",
+    ]
+    if not any(term in task_text for term in hardware_terms):
+        return False
+    if not competitors:
+        return False
+    generic_brands = {
+        "apple",
+        "苹果",
+        "huawei",
+        "华为",
+        "xiaomi",
+        "小米",
+        "oppo",
+        "vivo",
+        "honor",
+        "荣耀",
+        "samsung",
+        "三星",
+        "lenovo",
+        "联想",
+        "asus",
+        "华硕",
+        "hp",
+        "惠普",
+        "dell",
+        "戴尔",
+        "acer",
+        "宏碁",
+        "sony",
+        "索尼",
+        "canon",
+        "佳能",
+        "nikon",
+        "尼康",
+        "byd",
+        "比亚迪",
+        "tesla",
+        "特斯拉",
+    }
+    model_signal = re.compile(r"\d|pro|max|air|plus|ultra|mate|galaxy|thinkpad|thinkbook|macbook|ideapad|magic|find|reno|x\d|s\d", re.I)
+    broad_count = 0
+    for name in competitors:
+        normalized = re.sub(r"\s+", " ", name.strip().casefold())
+        if normalized in generic_brands:
+            broad_count += 1
+            continue
+        compact = re.sub(r"[\s\-_]+", "", normalized)
+        if compact in {re.sub(r"[\s\-_]+", "", item) for item in generic_brands}:
+            broad_count += 1
+            continue
+        if len(normalized.split()) <= 1 and not model_signal.search(normalized):
+            broad_count += 1
+    return broad_count >= max(1, len(competitors) // 2)
 
 
 def normalize_competitor_names(values: list[Any], limit: int) -> list[str]:
@@ -705,6 +1083,60 @@ def normalize_competitor_names(values: list[Any], limit: int) -> list[str]:
         if len(names) >= limit:
             break
     return names
+
+
+def validate_competitor_names(competitors: list[str]) -> None:
+    invalid = [name for name in competitors if is_invalid_competitor_name(name)]
+    if invalid:
+        raise ValueError(f"Invalid competitor names from CompetitorDiscoveryAgent: {invalid}")
+
+
+def validate_discovered_competitors(project: dict, intent: dict, competitors: list[str], max_count: int) -> None:
+    validate_competitor_names(competitors)
+    if not competitors:
+        raise ValueError("CompetitorDiscoveryAgent returned no competitors.")
+    task_text = f"{project.get('query', '')} {intent.get('industry', '')}"
+    auto_expected = bool(re.search(r"(?:自动|自行|AI|模型).*(?:选择|发现|推荐|找出).*竞品", task_text, flags=re.I))
+    minimum = max_count if auto_expected and max_count >= 2 else min(2, max_count)
+    if len(competitors) < minimum:
+        raise ValueError(f"CompetitorDiscoveryAgent returned {len(competitors)} competitors, expected at least {minimum}.")
+    if len({name.casefold() for name in competitors}) != len(competitors):
+        raise ValueError("CompetitorDiscoveryAgent returned duplicate competitors.")
+
+
+def validate_source_plan(plan: list[dict[str, Any]], competitors: list[str]) -> None:
+    if not plan:
+        raise ValueError("SourcePlanningAgent returned an empty source plan.")
+    grouped = Counter(item.get("competitor") for item in plan)
+    missing = [competitor for competitor in competitors if grouped[competitor] < 3]
+    if missing:
+        raise ValueError(f"SourcePlanningAgent returned fewer than 3 searches for competitors: {missing[:6]}")
+    required = {"official", "pricing", "review"}
+    weak = []
+    for competitor in competitors:
+        source_types = {str(item.get("source_type", "")) for item in plan if item.get("competitor") == competitor}
+        if len(required & source_types) < 2:
+            weak.append(competitor)
+    if weak:
+        raise ValueError(f"SourcePlanningAgent source mix is too weak for competitors: {weak[:6]}")
+
+
+def is_invalid_competitor_name(value: object) -> bool:
+    text = normalize_text(str(value or ""))
+    if not text:
+        return True
+    invalid_patterns = [
+        r"自动选择",
+        r"AI\s*自动",
+        r"合适竞品",
+        r"竞品数量",
+        r"分析任务",
+        r"其他说明",
+        r"报告视角",
+        r"请分析",
+        r"由\s*AI",
+    ]
+    return any(re.search(pattern, text, flags=re.I) for pattern in invalid_patterns)
 
 
 def normalize_competitor_details(values: list[Any], competitors: list[str]) -> list[dict[str, Any]]:
@@ -729,6 +1161,8 @@ def discovery_reason(name: str, llm_details: list[dict[str, Any]], intent: dict)
 
 def default_competitors(industry: str) -> list[str]:
     lower = industry.lower()
+    if "smartphone" in lower or "phone" in lower or "手机" in industry:
+        return ["iPhone 15", "华为 Mate 60", "小米 14 Pro", "OPPO Find X7", "vivo X100 Pro", "荣耀 Magic6 Pro"]
     if "laptop" in lower or "notebook" in lower or "笔记本" in industry or "电脑" in industry:
         return ["联想小新", "华硕无畏", "惠普战66", "戴尔灵越", "荣耀MagicBook", "机械革命无界"]
     if "e-commerce" in industry:
@@ -750,6 +1184,17 @@ def default_competitors(industry: str) -> list[str]:
 
 def source_query(competitor: str, source_type: str, industry: str) -> str:
     lower = industry.lower()
+    if "smartphone" in lower or "phone" in lower or "手机" in industry:
+        suffix = {
+            "official": "官网 官方 参数 配置 价格",
+            "pricing": "6000元 价格 京东 天猫 官方商城 促销",
+            "docs": "参数 芯片 影像 屏幕 续航 快充 系统",
+            "review": "评测 优缺点 用户评价 影像 续航 性能",
+            "news": "新品 发布 2026 手机",
+            "changelog": "系统 更新 版本 OTA 新功能",
+            "github": "评测 benchmark teardown",
+        }[source_type]
+        return f"{competitor} {industry} {suffix}"
     if "laptop" in lower or "notebook" in lower or "笔记本" in industry or "电脑" in industry:
         suffix = {
             "official": "官方 参数 配置 价格",
@@ -847,6 +1292,132 @@ STOPWORDS = {
 }
 
 
+QUALITY_REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "fit_for_user_task": {"type": "boolean"},
+        "domain_mismatch": {"type": "boolean"},
+        "suggested_status": {"type": "string"},
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "required_fixes": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["fit_for_user_task", "domain_mismatch", "suggested_status", "warnings", "required_fixes"],
+    "additionalProperties": True,
+}
+
+
+def quality_review_prompt(project: dict, intent: dict, competitors: list[Competitor], analysis: dict, warnings: list[str]) -> str:
+    profiles = [
+        {
+            "name": competitor.name,
+            "product_category": competitor.profile.get("product_category"),
+            "features": [feature.get("name") for feature in competitor.profile.get("features", [])[:10]],
+            "positioning": competitor.profile.get("positioning", {}).get("short_summary"),
+            "source_assessment": competitor.profile.get("source_assessment", {}),
+        }
+        for competitor in competitors
+    ]
+    return f"""
+Review whether this competitive intelligence run fits the user's requested task.
+
+Project:
+{json.dumps(project, ensure_ascii=False)}
+
+Intent:
+{json.dumps(intent, ensure_ascii=False)}
+
+Competitor profiles:
+{json.dumps(profiles, ensure_ascii=False)}
+
+Analysis summary:
+{json.dumps({key: analysis.get(key) for key in ["comparison_dimensions", "strategic_insights", "competitor_cards", "evidence_gaps"]}, ensure_ascii=False)}
+
+Existing warnings:
+{json.dumps(warnings, ensure_ascii=False)}
+
+Rules:
+- Mark domain_mismatch=true if the feature dimensions or product categories do not match the user's category.
+- For example, a phone report containing SaaS dimensions like RAG, API, enterprise controls, project management, database tables is a severe mismatch unless the task explicitly asks for phone AI software services.
+- Suggested status should be one of: pass, pass_with_warnings, needs_revision.
+- Required fixes should be concrete implementation/report fixes, not generic advice.
+"""
+
+
+def critical_quality_failures(
+    project: dict,
+    competitors: list[Competitor],
+    evidence: list[Evidence],
+    claims: list[Claim],
+    quality_score: dict,
+    warnings: list[str],
+    ai_review: dict,
+) -> list[str]:
+    failures: list[str] = []
+    query = str(project.get("query", ""))
+    expected_count = int(project.get("max_competitors") or 0)
+    auto_discovery = bool(re.search(r"(?:自动|自行|AI|模型).*(?:选择|发现|推荐|找出).*竞品", query, flags=re.I))
+    if auto_discovery and expected_count and len(competitors) < expected_count:
+        failures.append(f"expected {expected_count} discovered competitors, got {len(competitors)}")
+    if len(competitors) < 2:
+        failures.append("fewer than 2 competitors")
+    invalid = [competitor.name for competitor in competitors if is_invalid_competitor_name(competitor.name)]
+    if invalid:
+        failures.append(f"invalid competitor names: {invalid[:4]}")
+    if not evidence:
+        failures.append("no evidence was collected")
+    grouped = defaultdict(list)
+    for item in evidence:
+        grouped[item.evidence_metadata.get("competitor", "unknown")].append(item)
+    for competitor in competitors:
+        usable = [
+            item
+            for item in grouped.get(competitor.name, [])
+            if item.source_type not in {"unverified", "crawl_failed"} and item.credibility_score >= 0.35
+        ]
+        if len(usable) < 2:
+            failures.append(f"{competitor.name} has fewer than 2 usable evidence items")
+    if not claims:
+        failures.append("no claims were produced")
+    if ai_review.get("domain_mismatch"):
+        failures.append("LLM quality review detected domain mismatch")
+    if ai_review.get("fit_for_user_task") is False:
+        failures.append("LLM quality review says report does not fit the user task")
+    if int(quality_score.get("total", 0)) < 72:
+        failures.append(f"quality score below threshold: {quality_score.get('total')}")
+    severe_warning_markers = ["Relevance high", "Domain high", "runtime fallback", "LLM fallback"]
+    for warning in warnings:
+        if any(marker.lower() in str(warning).lower() for marker in severe_warning_markers):
+            failures.append(str(warning))
+    return failures
+
+
+def collect_runtime_fallback_warnings(outputs: dict, competitors: list[Competitor]) -> list[str]:
+    warnings: list[str] = []
+    discovery_payload = outputs.get("competitor_discovery", {}).get("payload", {})
+    discovery_reason = discovery_payload.get("discovery_fallback_reason")
+    if discovery_reason:
+        warnings.append(f"LLM fallback high: CompetitorDiscoveryAgent failed and used deterministic competitors. Error: {discovery_reason}")
+
+    source_payload = outputs.get("source_planning", {}).get("payload", {})
+    if source_payload and source_payload.get("llm_used") is False:
+        reason = source_payload.get("source_planning_fallback_reason") or "LLM source planning was not used."
+        warnings.append(f"LLM fallback high: SourcePlanningAgent used deterministic source queries. Error: {reason}")
+
+    analysis_source_mix = outputs.get("analysis", {}).get("source_mix", {})
+    llm_synthesis = analysis_source_mix.get("llm_synthesis") if isinstance(analysis_source_mix, dict) else {}
+    if isinstance(llm_synthesis, dict) and llm_synthesis.get("used") is False and llm_synthesis.get("error"):
+        warnings.append(f"LLM fallback high: AnalysisAgent used deterministic synthesis. Error: {llm_synthesis.get('error')}")
+
+    failed_profiles = []
+    for competitor in competitors:
+        extraction = competitor.profile.get("llm_extraction", {})
+        if isinstance(extraction, dict) and extraction.get("used") is False:
+            failed_profiles.append(f"{competitor.name}: {extraction.get('error') or 'unknown error'}")
+    if failed_profiles:
+        warnings.append("LLM fallback high: SchemaExtractionAgent failed for profiles: " + "; ".join(failed_profiles[:5]))
+    return warnings
+
+
 def compute_relevance(intent: dict, competitors: list[Competitor]) -> dict:
     requested = [normalize_name(name) for name in intent.get("target_companies", []) if name]
     output = [normalize_name(competitor.name) for competitor in competitors]
@@ -903,6 +1474,17 @@ def maturity_from_signal_count(count: int) -> str:
 def gtm_signals(profile: dict) -> list[str]:
     signals = []
     business_model = profile.get("business_model", [])
+    category = profile.get("product_category", "")
+    if "laptop" in category:
+        if "direct sales" in business_model:
+            signals.append("official/direct sales")
+        if "channel retail" in business_model:
+            signals.append("e-commerce/channel retail")
+        if "enterprise procurement" in business_model:
+            signals.append("business procurement")
+        if profile.get("pricing"):
+            signals.append("price-band competition")
+        return signals or ["hardware retail"]
     if "freemium" in business_model:
         signals.append("free tier / PLG")
     if "enterprise" in business_model:
@@ -920,6 +1502,12 @@ def gtm_signals(profile: dict) -> list[str]:
 
 def strategy_from_profile(profile: dict) -> str:
     models = set(profile.get("business_model", []))
+    if "laptop" in profile.get("product_category", ""):
+        if "enterprise procurement" in models:
+            return "hardware portfolio + business procurement channels"
+        if "channel retail" in models:
+            return "hardware retail through marketplace and official channels"
+        return "consumer hardware product-line competition"
     if {"marketplace", "advertising"} & models:
         return "platform ecosystem + traffic monetization"
     if "logistics_service" in models:
@@ -933,6 +1521,8 @@ def strategy_from_profile(profile: dict) -> str:
 
 def opportunity_from_profile(profile: dict) -> str:
     category = profile.get("product_category", "unknown")
+    if "laptop" in category:
+        return "围绕明确价位段、性能释放、屏幕/续航体验、售后和渠道价格透明度寻找差异化。"
     if "e-commerce" in category:
         return "围绕细分人群、履约体验、商家工具或信任机制寻找差异化切入。"
     if "AI productivity" in category:
@@ -964,10 +1554,14 @@ def extract_warnings(agent_key: str, payload: dict) -> list[str]:
 def compute_quality_score(competitors: list[Competitor], evidence: list[Evidence], claims: list[Claim], warnings: list[str], relevance: dict | None = None) -> dict:
     competitor_count = max(1, len(competitors))
     source_types = {item.source_type for item in evidence}
-    verified_evidence = [item for item in evidence if item.source_type not in {"unverified", "crawl_failed"} and item.credibility_score >= 0.35]
+    weak_source_types = {"unverified", "crawl_failed"}
+    high_confidence_source_types = source_types - weak_source_types - {"search_snippet"}
+    verified_evidence = [item for item in evidence if item.source_type not in weak_source_types and item.credibility_score >= 0.35]
+    high_confidence_evidence = [item for item in verified_evidence if item.source_type in high_confidence_source_types and item.credibility_score >= 0.55]
     verified_ids = {item.id for item in verified_evidence}
-    coverage_ratio = min(1.0, len(verified_evidence) / (competitor_count * 4))
-    source_diversity = min(1.0, len(source_types - {"unverified", "crawl_failed"}) / 5)
+    weighted_coverage = len(high_confidence_evidence) + 0.45 * (len(verified_evidence) - len(high_confidence_evidence))
+    coverage_ratio = min(1.0, weighted_coverage / (competitor_count * 4))
+    source_diversity = min(1.0, len(source_types - weak_source_types - {"search_snippet"}) / 5)
     verified_source_ratio = len(verified_evidence) / max(1, len(evidence))
     verified_claim_ratio = sum(
         1 for claim in claims if claim.claim_type == "unknown" or any(evidence_id in verified_ids for evidence_id in claim.evidence_ids)

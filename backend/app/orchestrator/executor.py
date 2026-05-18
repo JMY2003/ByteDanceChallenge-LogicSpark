@@ -161,6 +161,7 @@ class DAGOrchestrator:
             llm=LLMService(self.config),
             memory=memory,
         )
+        task_id = task.id
         try:
             output = await agent.execute(input_data, context)
             task.output = output
@@ -169,6 +170,10 @@ class DAGOrchestrator:
             memory[task.node_id] = output
             self.db.commit()
         except Exception as exc:
+            self.db.rollback()
+            task = self.db.get(Task, task_id)
+            if task is None:
+                raise
             task.retry_count += 1
             task.status = "pending" if task.retry_count <= task.max_retries else "failed"
             task.error = str(exc)

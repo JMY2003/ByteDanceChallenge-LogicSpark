@@ -39,12 +39,12 @@ export function ProjectAutoRunner({ projectId, autoRun, initialStatus }: { proje
   }, [isRunning, router]);
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex shrink-0 flex-wrap items-center gap-2">
       <button
         type="button"
         onClick={startRun}
         disabled={isRunning}
-        className="inline-flex h-10 items-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white hover:bg-signal disabled:cursor-not-allowed disabled:opacity-60"
+        className="btn btn-primary h-9"
       >
         {isRunning ? <RefreshCw size={16} className="animate-spin" /> : <Play size={16} />}
         {isRunning ? "Agent 运行中" : "运行 DAG"}

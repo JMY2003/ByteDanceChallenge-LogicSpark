@@ -14,9 +14,9 @@ export function FeatureCoverageChart({ report }: { report: Record<string, unknow
     return null;
   }
   return (
-    <section className="rounded-lg border border-line bg-white p-5 shadow-sm">
+    <section className="surface p-5">
       <div className="mb-4">
-        <div className="text-xs font-semibold uppercase tracking-wide text-steel">Feature Coverage</div>
+        <div className="text-xs font-semibold uppercase tracking-normal text-steel">Feature Coverage</div>
         <h2 className="mt-1 text-lg font-semibold text-ink">功能覆盖对比</h2>
       </div>
       <div className="h-56">
@@ -26,8 +26,8 @@ export function FeatureCoverageChart({ report }: { report: Record<string, unknow
             <XAxis dataKey="name" tick={{ fontSize: 11 }} />
             <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
             <Tooltip />
-            <Bar dataKey="supported" name="支持" stackId="features" fill="#0f766e" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="unknown" name="unknown" stackId="features" fill="#d7dde5" radius={[4, 4, 0, 0]} />
+            <Bar dataKey="supported" name="支持" stackId="features" fill="#0071e3" radius={[4, 4, 0, 0]} />
+            <Bar dataKey="unknown" name="unknown" stackId="features" fill="#d2d2d7" radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
       </div>

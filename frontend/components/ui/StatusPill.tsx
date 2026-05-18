@@ -1,10 +1,10 @@
 import clsx from "clsx";
 
 const tones: Record<string, string> = {
-  success: "bg-teal-50 text-signal ring-teal-200",
-  completed: "bg-teal-50 text-signal ring-teal-200",
-  pass: "bg-teal-50 text-signal ring-teal-200",
-  running: "bg-blue-50 text-blue-700 ring-blue-200",
+  success: "bg-signal/10 text-signal ring-signal/20",
+  completed: "bg-signal/10 text-signal ring-signal/20",
+  pass: "bg-signal/10 text-signal ring-signal/20",
+  running: "bg-signal/10 text-signal ring-signal/20",
   pending: "bg-slate-100 text-steel ring-slate-200",
   failed: "bg-red-50 text-danger ring-red-200",
   needs_revision: "bg-red-50 text-danger ring-red-200",
@@ -19,4 +19,3 @@ export function StatusPill({ status }: { status: string }) {
     </span>
   );
 }
-

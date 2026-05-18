@@ -43,6 +43,7 @@ class AgentContext:
     memory: dict[str, Any] = field(default_factory=dict)
     logger: AgentLogger = field(default_factory=AgentLogger)
     run_id: str | None = None
+    llm_usage_total: dict[str, int] = field(default_factory=dict)
 
     async def call_tool(self, tool_name: str, input_data: dict[str, Any]) -> dict[str, Any]:
         started_at = iso_now()
@@ -76,13 +77,16 @@ class AgentContext:
             )
             raise
 
-    async def complete_json(self, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+    async def complete_json(self, prompt: str, schema: dict[str, Any], max_tokens: int = 4096) -> dict[str, Any]:
         if not self.llm:
             raise RuntimeError("LLM service is not configured.")
         started_at = iso_now()
         try:
-            output = await self.llm.complete_json(prompt, schema)
+            output = await self.llm.complete_json(prompt, schema, max_tokens=max_tokens)
             ended_at = iso_now()
+            usage = self.llm.last_usage or {}
+            for key in ("input_tokens", "output_tokens", "total_tokens"):
+                self.llm_usage_total[key] = self.llm_usage_total.get(key, 0) + int(usage.get(key) or 0)
             self.logger.record(
                 ToolCallLog(
                     tool_name=f"llm:{self.llm.model}",
@@ -156,9 +160,9 @@ class BaseAgent(ABC):
             run.tool_calls = context.logger.tool_calls
             run.ended_at = utc_now()
             run.duration_ms = int((time.perf_counter() - started_perf) * 1000)
-            if context.llm and context.llm.last_usage:
+            if context.llm and context.llm_usage_total:
                 run.model = context.llm.model
-                run.token_usage = context.llm.last_usage
+                run.token_usage = context.llm_usage_total
                 run.cost_estimate = context.llm.last_cost_estimate
             else:
                 run.token_usage = estimate_token_usage(input_data, output)

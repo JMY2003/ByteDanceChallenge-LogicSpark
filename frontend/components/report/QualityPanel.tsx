@@ -13,10 +13,10 @@ const rows: Array<[keyof QualityScore, string, number]> = [
 
 export function QualityPanel({ score }: { score: QualityScore }) {
   return (
-    <section className="rounded-lg border border-line bg-white p-5 shadow-sm">
+    <section className="surface p-5">
       <div className="flex items-end justify-between gap-4">
         <div>
-          <div className="text-xs font-semibold uppercase tracking-wide text-steel">Quality Gate</div>
+          <div className="text-xs font-semibold uppercase tracking-normal text-steel">Quality Gate</div>
           <div className="mt-2 text-4xl font-semibold text-ink">{score.total}</div>
         </div>
         <div className="text-sm text-steel">/ 100</div>
@@ -42,4 +42,3 @@ export function QualityPanel({ score }: { score: QualityScore }) {
     </section>
   );
 }
-

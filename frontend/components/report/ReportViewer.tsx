@@ -34,12 +34,12 @@ export function ReportViewer({ projectId, markdown }: { projectId: string; markd
       <div className="flex flex-wrap gap-2">
         <button
           onClick={() => setIsEditing((value) => !value)}
-          className="inline-flex h-10 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium hover:border-signal"
+          className="btn"
         >
           <Edit3 size={16} />
           {isEditing ? "预览" : "编辑"}
         </button>
-        <button onClick={onSave} className="inline-flex h-10 items-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white hover:bg-signal">
+        <button onClick={onSave} className="btn btn-dark">
           <Save size={16} />
           保存
         </button>
@@ -47,22 +47,22 @@ export function ReportViewer({ projectId, markdown }: { projectId: string; markd
           <button
             key={format}
             onClick={() => onExport(format)}
-            className="inline-flex h-10 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium hover:border-signal"
+            className="btn"
           >
             <Download size={16} />
             {format === "ppt_outline" ? "PPT 大纲" : format.toUpperCase()}
           </button>
         ))}
       </div>
-      {message ? <div className="rounded-md border border-teal-200 bg-teal-50 p-3 text-sm text-signal">{message}</div> : null}
+      {message ? <div className="rounded-lg border border-signal/20 bg-signal/10 p-3 text-sm text-signal">{message}</div> : null}
       {isEditing ? (
         <textarea
           value={content}
           onChange={(event) => setContent(event.target.value)}
-          className="min-h-[720px] w-full rounded-lg border border-line bg-white p-4 font-mono text-sm leading-6 outline-none focus:border-signal"
+          className="field-control min-h-[720px] p-4 font-mono leading-6"
         />
       ) : (
-        <article className="prose-report rounded-lg border border-line bg-white p-6 shadow-sm">
+        <article className="prose-report surface p-6 md:p-8">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
         </article>
       )}

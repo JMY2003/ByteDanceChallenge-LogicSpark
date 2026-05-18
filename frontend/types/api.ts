@@ -98,6 +98,8 @@ export type CompetitorProfile = {
     cons: Array<Record<string, unknown>>;
   };
   technical_signals: Array<Record<string, unknown>>;
+  source_assessment?: Record<string, unknown>;
+  llm_extraction?: Record<string, unknown>;
   swot?: {
     strengths?: Array<{ point?: string; confidence?: number; evidence_ids?: string[] }>;
     weaknesses?: Array<{ point?: string; confidence?: number; evidence_ids?: string[] }>;

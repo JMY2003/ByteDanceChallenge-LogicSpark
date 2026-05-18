@@ -3,8 +3,10 @@ from pathlib import Path
 
 os.environ["COMPETESCOPE_DATABASE_URL"] = "sqlite:///./test_competescope.db"
 
+import app.config as app_config
 from app.config import get_settings
 
+app_config.SIMULATIVE = True
 get_settings.cache_clear()
 
 TEST_DB = Path("test_competescope.db")
@@ -60,8 +62,8 @@ def test_mvp_query_to_markdown_report_flow() -> None:
         body = report.json()
         assert body["markdown"]
         assert "## 事实结论" in body["markdown"]
-        assert "## SWOT 摘要" in body["markdown"]
-        assert "## QA 与红队挑战" in body["markdown"]
+        assert "## 竞品对比表" in body["markdown"]
+        assert "## 证据质量与风险" in body["markdown"]
         assert "ev_" in body["markdown"]
         assert body["html"]
         assert body["json_report"]["claims"]
@@ -70,7 +72,7 @@ def test_mvp_query_to_markdown_report_flow() -> None:
 
         runs = client.get(f"/api/projects/{project_id}/agent-runs")
         assert runs.status_code == 200
-        assert len(runs.json()) >= 24
+        assert len(runs.json()) >= 12
 
 
 def test_ecommerce_query_uses_domain_competitors_and_deep_report_sections() -> None:
@@ -100,8 +102,8 @@ def test_ecommerce_query_uses_domain_competitors_and_deep_report_sections() -> N
 
         report = client.get(f"/api/projects/{project_id}/report").json()
         assert "e-commerce" in report["json_report"]["agent_outputs"]["intent"]["industry"]
-        assert "## 战略洞察与机会地图" in report["markdown"]
-        assert "## QA 与红队挑战" in report["markdown"]
+        assert "## 关键结论" in report["markdown"]
+        assert "## 下一步验证清单" in report["markdown"]
 
 
 def test_prompt_variants_keep_requested_competitors_in_scope() -> None:

@@ -9,16 +9,17 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: "#17202a",
-        steel: "#667085",
-        panel: "#f7f9fc",
-        line: "#d7dde5",
-        signal: "#0f766e",
-        warn: "#b45309",
-        danger: "#b42318"
+        ink: "#1d1d1f",
+        steel: "#6e6e73",
+        panel: "#f5f5f7",
+        line: "#d2d2d7",
+        signal: "#0071e3",
+        warn: "#bf5b00",
+        danger: "#d70015"
       },
       boxShadow: {
-        soft: "0 18px 45px rgba(16, 24, 40, 0.08)"
+        soft: "0 18px 44px rgba(0, 0, 0, 0.07)",
+        hairline: "0 1px 2px rgba(0, 0, 0, 0.04)"
       }
     }
   },
@@ -26,4 +27,3 @@ const config: Config = {
 };
 
 export default config;
-

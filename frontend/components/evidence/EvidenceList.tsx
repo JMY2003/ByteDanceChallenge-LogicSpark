@@ -4,7 +4,7 @@ import type { EvidenceItem } from "@/types/api";
 
 export function EvidenceList({ projectId, evidence }: { projectId: string; evidence: EvidenceItem[] }) {
   if (!evidence.length) {
-    return <div className="rounded-lg border border-line bg-white p-5 text-sm text-steel">暂无证据。运行项目后会在这里显示引用片段。</div>;
+    return <div className="surface p-5 text-sm text-steel">暂无证据。运行项目后会在这里显示引用片段。</div>;
   }
   return (
     <div className="grid gap-3">
@@ -12,12 +12,12 @@ export function EvidenceList({ projectId, evidence }: { projectId: string; evide
         <Link
           key={item.evidence_id}
           href={`/projects/${projectId}/evidence/${item.evidence_id}`}
-          className="rounded-lg border border-line bg-white p-4 shadow-sm hover:border-signal"
+          className="surface p-4 transition hover:border-signal/40 hover:bg-white"
         >
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <div className="font-semibold text-ink">{item.evidence_id}</div>
-              <div className="mt-1 text-sm text-steel">{item.source_title}</div>
+              <div className="font-semibold text-ink">{item.source_title || item.evidence_id}</div>
+              <div className="mt-1 text-sm text-steel">{item.publisher ?? item.source_type}</div>
             </div>
             <div className="inline-flex items-center gap-1 text-sm text-signal">
               <ExternalLink size={15} />
@@ -35,4 +35,3 @@ export function EvidenceList({ projectId, evidence }: { projectId: string; evide
     </div>
   );
 }
-

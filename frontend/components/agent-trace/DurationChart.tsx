@@ -7,14 +7,13 @@ export function DurationChart({ data }: { data: Array<{ name: string; duration: 
     <div className="h-80">
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#d7dde5" />
+          <CartesianGrid strokeDasharray="3 3" stroke="#d2d2d7" />
           <XAxis dataKey="name" tick={{ fontSize: 12 }} />
           <YAxis />
           <Tooltip />
-          <Bar dataKey="duration" fill="#0f766e" radius={[4, 4, 0, 0]} />
+          <Bar dataKey="duration" fill="#0071e3" radius={[4, 4, 0, 0]} />
         </BarChart>
       </ResponsiveContainer>
     </div>
   );
 }
-

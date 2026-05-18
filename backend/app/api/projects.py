@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter, defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -198,9 +199,10 @@ def get_report(project_id: str, db: Session = Depends(get_db)) -> ReportResponse
     quality_score = None
     if "markdown" in by_format:
         quality_score = by_format["markdown"].report_metadata.get("quality_score")
+    markdown = readable_report_content(db, project_id, by_format["markdown"]) if "markdown" in by_format else None
     return ReportResponse(
         project_id=project_id,
-        markdown=by_format.get("markdown").content if "markdown" in by_format else None,
+        markdown=markdown,
         html=by_format.get("html").content if "html" in by_format else None,
         json_report=json_report,
         quality_score=quality_score,
@@ -209,7 +211,7 @@ def get_report(project_id: str, db: Session = Depends(get_db)) -> ReportResponse
 
 @router.post("/{project_id}/export", response_model=ExportResponse)
 def export_report(project_id: str, payload: ExportRequest, db: Session = Depends(get_db)) -> ExportResponse:
-    ensure_project_exists(db, project_id)
+    project = ensure_project_exists(db, project_id)
     report = db.scalars(select(Report).where(Report.project_id == project_id, Report.format == payload.format)).first()
     if not report:
         raise HTTPException(status_code=404, detail=f"{payload.format} report not found")
@@ -220,12 +222,13 @@ def export_report(project_id: str, payload: ExportRequest, db: Session = Depends
         "ppt_outline": "text/markdown",
     }.get(payload.format, "text/plain")
     extension = {"markdown": "md", "ppt_outline": "ppt-outline.md"}.get(payload.format, payload.format)
+    content = readable_report_content(db, project_id, report) if payload.format in {"markdown", "ppt_outline"} else report.content
     return ExportResponse(
         project_id=project_id,
         format=payload.format,
-        filename=f"competescope-{project_id}.{extension}",
+        filename=readable_export_filename(project, report, extension),
         content_type=content_type,
-        content=report.content,
+        content=content,
     )
 
 
@@ -304,3 +307,62 @@ def evidence_schema(item: Evidence) -> EvidenceItem:
         supports_claim_ids=item.supports_claim_ids,
         metadata=item.evidence_metadata,
     )
+
+
+def readable_export_filename(project: Project, report: Report, extension: str) -> str:
+    topic = extract_topic_for_filename(project.query, report.content)
+    suffix = "竞品分析报告"
+    if extension == "ppt-outline.md":
+        suffix = "PPT大纲"
+    filename = sanitize_filename(f"CompeteScope-{topic}-{suffix}")
+    return f"{filename}.{extension}"
+
+
+def readable_report_content(db: Session, project_id: str, report: Report) -> str:
+    if report.format not in {"markdown", "ppt_outline"}:
+        return report.content
+    evidence = db.scalars(select(Evidence).where(Evidence.project_id == project_id)).all()
+    if not evidence:
+        return report.content
+    from app.agents.mvp_agents import make_citations_readable
+
+    return make_citations_readable(report.content, list(evidence), project_id)
+
+
+def extract_topic_for_filename(query: str, content: str) -> str:
+    for pattern in [
+        r"品类[:：]\s*([^。；;\n]+)",
+        r"分析任务[:：]\s*请分析\s*([^。；;\n]+?)(?:品类|领域|赛道|，|,|。|$)",
+    ]:
+        match = re.search(pattern, query)
+        if match:
+            return normalize_filename_part(match.group(1))
+    heading = first_markdown_heading(content)
+    if heading:
+        heading = re.sub(r"^(CompeteScope\s*AI\s*)?", "", heading, flags=re.I)
+        heading = re.sub(r"(竞品分析)?报告$", "", heading).strip()
+        if heading:
+            return normalize_filename_part(heading)
+    return normalize_filename_part(query[:60]) or "竞品分析"
+
+
+def first_markdown_heading(content: str) -> str:
+    for line in str(content or "").splitlines():
+        match = re.match(r"^#\s+(.+)$", line.strip())
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def normalize_filename_part(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(r"^(任务模式[:：]\s*)?(AI发现竞品|给定竞品)[。.\s-]*", "", text)
+    text = text.strip(" -_，,。；;")
+    return text[:72].strip(" -_，,。；;")
+
+
+def sanitize_filename(value: str) -> str:
+    text = re.sub(r"[\\/:*?\"<>|\x00-\x1f]", "-", value)
+    text = re.sub(r"\s+", " ", text).strip(" .-_")
+    text = re.sub(r"-{2,}", "-", text)
+    return text[:96].strip(" .-_") or "CompeteScope-竞品分析报告"

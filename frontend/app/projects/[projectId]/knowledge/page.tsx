@@ -10,21 +10,21 @@ export default async function KnowledgePage({ params }: PageProps) {
   const { projectId } = await params;
   const competitors = await getCompetitors(projectId);
   return (
-    <main className="min-h-screen px-6 py-6">
-      <div className="mx-auto max-w-7xl space-y-5">
+    <main className="app-page">
+      <div className="shell-wide space-y-5">
         <header className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <div className="inline-flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-signal">
+            <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-normal text-signal">
               <Database size={16} />
               Knowledge Base
             </div>
-            <h1 className="mt-2 text-3xl font-semibold text-ink">竞品知识库</h1>
+            <h1 className="mt-2 page-title">竞品知识库</h1>
           </div>
           <ProjectNav projectId={projectId} />
         </header>
         <section className="grid gap-4 lg:grid-cols-2">
           {competitors.map((competitor) => (
-            <article key={competitor.competitor_id} className="rounded-lg border border-line bg-white p-5 shadow-sm">
+            <article key={competitor.competitor_id} className="surface p-5">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <h2 className="text-xl font-semibold text-ink">{competitor.name}</h2>
@@ -55,12 +55,12 @@ export default async function KnowledgePage({ params }: PageProps) {
                 <div className="mb-2 text-sm font-semibold text-ink">价格信号</div>
                 {competitor.pricing.length ? (
                   competitor.pricing.map((pricing) => (
-                    <div key={`${competitor.competitor_id}-${pricing.plan_name}`} className="rounded-md bg-panel p-3 text-sm text-steel">
+                    <div key={`${competitor.competitor_id}-${pricing.plan_name}`} className="rounded-lg bg-panel p-3 text-sm text-steel">
                       {pricing.plan_name}: {pricing.price} · {pricing.billing_cycle}
                     </div>
                   ))
                 ) : (
-                  <div className="rounded-md bg-panel p-3 text-sm text-steel">unknown</div>
+                  <div className="rounded-lg bg-panel p-3 text-sm text-steel">unknown</div>
                 )}
               </div>
             </article>
@@ -73,8 +73,8 @@ export default async function KnowledgePage({ params }: PageProps) {
 
 function SwotColumn({ title, items }: { title: string; items: Array<{ point?: string; confidence?: number; evidence_ids?: string[] }> }) {
   return (
-    <div className="rounded-md bg-panel p-3">
-      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-steel">{title}</div>
+    <div className="rounded-lg bg-panel p-3">
+      <div className="mb-2 text-xs font-semibold uppercase tracking-normal text-steel">{title}</div>
       {items.length ? (
         <div className="space-y-2">
           {items.slice(0, 3).map((item, index) => (
@@ -93,8 +93,8 @@ function SwotColumn({ title, items }: { title: string; items: Array<{ point?: st
 
 function InfoBlock({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md bg-panel p-3">
-      <div className="text-xs font-semibold uppercase tracking-wide text-steel">{label}</div>
+    <div className="rounded-lg bg-panel p-3">
+      <div className="text-xs font-semibold uppercase tracking-normal text-steel">{label}</div>
       <div className="mt-1 text-sm text-ink">{value}</div>
     </div>
   );

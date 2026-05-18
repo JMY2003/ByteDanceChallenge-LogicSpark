@@ -10,7 +10,8 @@ from app.config import Settings, should_simulate
 
 
 LLM_MODEL_NAME = "glm-5.1"
-LLM_REQUEST_TIMEOUT_SECONDS = 30.0
+LLM_REQUEST_TIMEOUT_SECONDS = 600.0
+DEFAULT_LLM_MAX_TOKENS = 4096
 
 
 class LLMService:
@@ -32,7 +33,7 @@ class LLMService:
     def enabled(self) -> bool:
         return not should_simulate(self.settings)
 
-    async def complete_json(self, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+    async def complete_json(self, prompt: str, schema: dict[str, Any], max_tokens: int = DEFAULT_LLM_MAX_TOKENS) -> dict[str, Any]:
         if not self.enabled:
             raise RuntimeError("LLM API is disabled because SIMULATIVE=True.")
         if not self.api_key:
@@ -41,7 +42,7 @@ class LLMService:
         payload = {
             "model": self.model,
             "temperature": 0.2,
-            "max_tokens": 4096,
+            "max_tokens": max_tokens,
             "response_format": {"type": "json_object"},
             "messages": [
                 {
@@ -62,15 +63,24 @@ class LLMService:
                 },
             ],
         }
+        if self._supports_thinking_toggle():
+            payload["thinking"] = {"type": "disabled"}
         data = await self._post_chat_completions(payload)
         usage = data.get("usage") or {}
+        input_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+        total_tokens = int(usage.get("total_tokens") or 0) or input_tokens + output_tokens
         self.last_usage = {
-            "input_tokens": int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
-            "output_tokens": int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
-            "total_tokens": int(usage.get("total_tokens") or 0),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
         }
         self.last_cost_estimate = 0.0
         content = data["choices"][0]["message"]["content"]
+        if not content or not str(content).strip():
+            reasoning = data["choices"][0]["message"].get("reasoning_content", "")
+            if reasoning:
+                raise ValueError("LLM returned reasoning_content but empty content. Disable thinking or increase max_tokens.")
         return parse_json_object(content)
 
     async def _post_chat_completions(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -92,6 +102,10 @@ class LLMService:
         except (httpx.HTTPError, json.JSONDecodeError) as exc:
             last_error = exc
         raise RuntimeError(f"LLM API request failed: {last_error}") from last_error
+
+    def _supports_thinking_toggle(self) -> bool:
+        marker = f"{self.model} {self.base_url}".lower()
+        return "glm" in marker or "bigmodel" in marker or "z.ai" in marker
 
 
 def parse_json_object(content: str) -> dict[str, Any]:

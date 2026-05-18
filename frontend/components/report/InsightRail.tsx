@@ -13,14 +13,14 @@ export function InsightRail({ report }: InsightRailProps) {
 
   return (
     <aside className="space-y-4">
-      <section className="rounded-lg border border-line bg-white p-4 shadow-sm">
+      <section className="surface p-4">
         <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-ink">
           <CheckCircle2 size={17} className="text-signal" />
           战略洞察
         </div>
         <div className="space-y-3">
           {strategic.slice(0, 4).map((item, index) => (
-            <div key={index} className="rounded-md bg-panel p-3 text-sm leading-6 text-ink">
+            <div key={index} className="rounded-lg bg-panel p-3 text-sm leading-6 text-ink">
               {String(item.claim ?? "unknown")}
               <div className="mt-2 text-xs text-steel">confidence {Number(item.confidence ?? 0).toFixed(2)}</div>
             </div>
@@ -28,7 +28,7 @@ export function InsightRail({ report }: InsightRailProps) {
           {!strategic.length ? <div className="text-sm text-steel">暂无战略洞察。</div> : null}
         </div>
       </section>
-      <section className="rounded-lg border border-line bg-white p-4 shadow-sm">
+      <section className="surface p-4">
         <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-ink">
           <ShieldQuestion size={17} className="text-warn" />
           红队挑战
@@ -42,7 +42,7 @@ export function InsightRail({ report }: InsightRailProps) {
           {!redTeam.length ? <div className="text-sm text-steel">暂无高风险挑战。</div> : null}
         </div>
       </section>
-      <section className="rounded-lg border border-line bg-white p-4 shadow-sm">
+      <section className="surface p-4">
         <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-ink">
           <AlertTriangle size={17} className="text-warn" />
           质量警告
@@ -63,4 +63,3 @@ export function InsightRail({ report }: InsightRailProps) {
 function getRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
-

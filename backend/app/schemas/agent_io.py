@@ -27,6 +27,7 @@ class PlannerTaskSpec(StrictBaseModel):
 class PlannerOutput(StrictBaseModel):
     dag: dict
     tasks: list[PlannerTaskSpec]
+    research_plan: dict = Field(default_factory=dict)
 
 
 class SearchResult(StrictBaseModel):
@@ -84,6 +85,11 @@ class AnalysisOutput(StrictBaseModel):
     claims: list[dict]
     feature_matrix: dict
     strategic_insights: list[dict]
+    comparison_dimensions: list[dict] = Field(default_factory=list)
+    pricing_table: list[dict] = Field(default_factory=list)
+    competitor_cards: list[dict] = Field(default_factory=list)
+    evidence_gaps: list[dict] = Field(default_factory=list)
+    source_mix: dict = Field(default_factory=dict)
 
 
 class ReportWriterOutput(StrictBaseModel):
@@ -100,4 +106,3 @@ class GenericAgentOutput(StrictBaseModel):
     summary: str
     evidence_ids: list[str] = Field(default_factory=list)
     payload: dict = Field(default_factory=dict)
-

@@ -25,19 +25,19 @@ export default async function ProjectRunPage({ params, searchParams }: PageProps
   const totalDuration = runs.reduce((sum, run) => sum + run.duration_ms, 0);
 
   return (
-    <main className="min-h-screen px-6 py-6">
-      <div className="mx-auto max-w-7xl space-y-5">
+    <main className="app-page">
+      <div className="shell-wide space-y-5">
         <header className="space-y-4">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <div className="text-sm font-semibold uppercase tracking-wide text-signal">Project {projectId}</div>
+              <div className="eyebrow">Project {projectId}</div>
               <div className="mt-2 flex flex-wrap items-center gap-3">
-                <h1 className="text-3xl font-semibold text-ink">竞品情报工作台</h1>
+                <h1 className="page-title">竞品情报工作台</h1>
                 <StatusPill status={status.status} />
               </div>
-              <p className="mt-2 max-w-4xl text-sm leading-6 text-steel">{status.query}</p>
+              <p className="mt-2 page-subtitle">{status.query}</p>
             </div>
-            <div className="flex flex-col items-end gap-3">
+            <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
               <ProjectNav projectId={projectId} />
               <ProjectAutoRunner projectId={projectId} autoRun={queryParams.autorun === "1"} initialStatus={status.status} />
             </div>

@@ -11,15 +11,18 @@ from app.tools.base import BaseTool
 from app.tools.fixtures import fixture_results_for, generic_fixture_results_for
 
 
+SEARCH_REQUEST_TIMEOUT_SECONDS = 20.0
+
+
 class WebSearchTool(BaseTool):
     name = "web_search"
-    description = "Search public web sources. Offline mode uses deterministic public-source fixtures."
+    description = "Search public web sources. SIMULATIVE mode uses deterministic public-source fixtures."
 
     async def call(self, input_data: dict) -> dict:
         settings = get_settings()
         query = input_data.get("query", "")
         competitor = input_data.get("competitor") or query
-        requested_source_type = input_data.get("source_type", "mixed")
+        requested_source_type = normalize_source_type(input_data.get("source_type", "mixed"))
         max_results = int(input_data.get("max_results") or settings.max_search_results_per_competitor)
 
         if should_simulate(settings):
@@ -40,18 +43,9 @@ class WebSearchTool(BaseTool):
             return {"search_results": results, "provider": "offline_fixture"}
 
         provider_results = await self._search_with_configured_provider(settings, query, competitor, requested_source_type, max_results)
-        if provider_results:
-            return {"search_results": provider_results, "provider": "configured_search"}
-
-        fallback_results = [
-            self._result_from_fixture(rank, item, query, competitor)
-            for rank, item in enumerate(generic_fixture_results_for(competitor, query)[:max_results], start=1)
-        ]
-        return {
-            "search_results": fallback_results,
-            "provider": "generic_offline_fallback",
-            "warning": "No live search provider returned results; generated low-confidence collection scaffolds.",
-        }
+        if not provider_results:
+            raise RuntimeError(f"Live search returned no results for query: {query}")
+        return {"search_results": provider_results, "provider": "configured_search"}
 
     async def _search_with_configured_provider(
         self,
@@ -72,52 +66,43 @@ class WebSearchTool(BaseTool):
         return await self._duckduckgo_html(query, competitor, requested_source_type, max_results)
 
     async def _serper(self, api_key: str, query: str, competitor: str, source_type: str, max_results: int) -> list[dict]:
-        try:
-            async with httpx.AsyncClient(timeout=12) as client:
-                response = await client.post(
-                    "https://google.serper.dev/search",
-                    headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
-                    json={"q": query, "num": max_results},
-                )
-                response.raise_for_status()
-            organic = response.json().get("organic", [])
-            return [
-                self._result_from_live_item(rank, item.get("link", ""), item.get("title", ""), item.get("snippet", ""), query, competitor, source_type)
-                for rank, item in enumerate(organic[:max_results], start=1)
-                if item.get("link")
-            ]
-        except httpx.HTTPError:
-            return []
+        async with httpx.AsyncClient(timeout=SEARCH_REQUEST_TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                "https://google.serper.dev/search",
+                headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+                json={"q": query, "num": max_results},
+            )
+            response.raise_for_status()
+        organic = response.json().get("organic", [])
+        return [
+            self._result_from_live_item(rank, item.get("link", ""), item.get("title", ""), item.get("snippet", ""), query, competitor, source_type)
+            for rank, item in enumerate(organic[:max_results], start=1)
+            if item.get("link")
+        ]
 
     async def _brave(self, api_key: str, query: str, competitor: str, source_type: str, max_results: int) -> list[dict]:
-        try:
-            async with httpx.AsyncClient(timeout=12) as client:
-                response = await client.get(
-                    "https://api.search.brave.com/res/v1/web/search",
-                    headers={"X-Subscription-Token": api_key, "Accept": "application/json"},
-                    params={"q": query, "count": max_results},
-                )
-                response.raise_for_status()
-            items = response.json().get("web", {}).get("results", [])
-            return [
-                self._result_from_live_item(rank, item.get("url", ""), item.get("title", ""), item.get("description", ""), query, competitor, source_type)
-                for rank, item in enumerate(items[:max_results], start=1)
-                if item.get("url")
-            ]
-        except httpx.HTTPError:
-            return []
+        async with httpx.AsyncClient(timeout=SEARCH_REQUEST_TIMEOUT_SECONDS) as client:
+            response = await client.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                headers={"X-Subscription-Token": api_key, "Accept": "application/json"},
+                params={"q": query, "count": max_results},
+            )
+            response.raise_for_status()
+        items = response.json().get("web", {}).get("results", [])
+        return [
+            self._result_from_live_item(rank, item.get("url", ""), item.get("title", ""), item.get("description", ""), query, competitor, source_type)
+            for rank, item in enumerate(items[:max_results], start=1)
+            if item.get("url")
+        ]
 
     async def _duckduckgo_html(self, query: str, competitor: str, source_type: str, max_results: int) -> list[dict]:
-        try:
-            async with httpx.AsyncClient(
-                timeout=12,
-                follow_redirects=True,
-                headers={"User-Agent": "CompeteScopeAI/0.1 research preview"},
-            ) as client:
-                response = await client.get("https://duckduckgo.com/html/", params={"q": query})
-                response.raise_for_status()
-        except httpx.HTTPError:
-            return []
+        async with httpx.AsyncClient(
+            timeout=SEARCH_REQUEST_TIMEOUT_SECONDS,
+            follow_redirects=True,
+            headers={"User-Agent": "CompeteScopeAI/0.1 research preview"},
+        ) as client:
+            response = await client.get("https://duckduckgo.com/html/", params={"q": query})
+            response.raise_for_status()
 
         soup = BeautifulSoup(response.text, "html.parser")
         results = []
@@ -164,7 +149,7 @@ class WebSearchTool(BaseTool):
             "url": url,
             "title": title or url,
             "snippet": snippet or "",
-            "source_type": source_type,
+            "source_type": normalize_source_type(source_type),
             "rank": rank,
             "query": query,
             "competitor": competitor,
@@ -195,3 +180,45 @@ def infer_source_type(url: str, title: str, query: str) -> str:
     if "news" in text or "blog" in text or "changelog" in text or "更新" in text:
         return "news"
     return "official"
+
+
+def normalize_source_type(value: object) -> str:
+    normalized = str(value or "mixed").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "official_spec": "official",
+        "official_specs": "official",
+        "official_page": "official",
+        "official_product": "official",
+        "official_spec_pricing": "official",
+        "official_specs_pricing": "official",
+        "official_price": "pricing",
+        "product_page": "official",
+        "price": "pricing",
+        "pricing_channel": "pricing",
+        "channel_pricing": "pricing",
+        "current_pricing_channel": "pricing",
+        "latest_pricing_channel": "pricing",
+        "commerce": "pricing",
+        "ecommerce": "pricing",
+        "third_party_review": "review",
+        "third_party_reviews": "review",
+        "user_review": "review",
+        "user_reviews": "review",
+        "market_news": "news",
+        "media_news": "news",
+        "forum": "review",
+        "community": "review",
+        "social": "review",
+        "ecosystem_experience": "review",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    if "pricing" in normalized or "price" in normalized or "channel" in normalized:
+        return "pricing"
+    if "official" in normalized or "spec" in normalized or "product" in normalized:
+        return "official"
+    if "review" in normalized or "feedback" in normalized or "experience" in normalized or "forum" in normalized:
+        return "review"
+    if "news" in normalized or "market" in normalized:
+        return "news"
+    return normalized or "mixed"

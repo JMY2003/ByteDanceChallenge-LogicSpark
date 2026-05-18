@@ -16,15 +16,15 @@ export default async function ObservabilityPage({ params }: PageProps) {
   const failedRuns = runs.filter((run) => run.status === "failed").length;
   const chartData = runs.map((run) => ({ name: run.agent_name.replace("Agent", ""), duration: run.duration_ms }));
   return (
-    <main className="min-h-screen px-6 py-6">
-      <div className="mx-auto max-w-7xl space-y-5">
+    <main className="app-page">
+      <div className="shell-wide space-y-5">
         <header className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <div className="inline-flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-signal">
+            <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-normal text-signal">
               <Activity size={16} />
               Observability
             </div>
-            <h1 className="mt-2 text-3xl font-semibold text-ink">可观测性 Dashboard</h1>
+            <h1 className="mt-2 page-title">可观测性 Dashboard</h1>
           </div>
           <ProjectNav projectId={projectId} />
         </header>
@@ -35,7 +35,7 @@ export default async function ObservabilityPage({ params }: PageProps) {
           <MetricCard label="总耗时" value={`${totalDuration}ms`} />
           <MetricCard label="证据数" value={evidence.length} />
         </div>
-        <section className="rounded-lg border border-line bg-white p-5 shadow-sm">
+        <section className="surface p-5">
           <h2 className="mb-4 text-xl font-semibold text-ink">Agent 耗时</h2>
           <DurationChart data={chartData} />
         </section>

@@ -135,14 +135,14 @@ export function CreateProjectForm() {
     <form onSubmit={onSubmit} className="space-y-5">
       <div>
         <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
-          <label className="block text-sm font-medium text-ink">任务输入</label>
+          <label className="block text-sm font-semibold text-ink">任务输入</label>
           <div className="flex flex-wrap gap-2">
             {examples.map((example) => (
               <button
                 key={example.label}
                 type="button"
                 onClick={() => applyExample(example)}
-                className="inline-flex h-8 items-center gap-1 rounded-md border border-line bg-white px-2 text-xs font-medium text-steel hover:border-signal hover:text-signal"
+                className="btn h-8 px-2 text-xs text-steel"
               >
                 <Wand2 size={13} />
                 {example.label}
@@ -171,12 +171,12 @@ export function CreateProjectForm() {
       </div>
 
       <label className="block text-sm">
-        <span className="mb-2 block font-medium text-ink">品类</span>
+        <span className="field-label">品类</span>
         <input
           value={category}
           onChange={(event) => setCategory(event.target.value)}
           placeholder="例如：6000元价位档笔记本电脑"
-          className="h-11 w-full rounded-md border border-line bg-white px-3 outline-none ring-signal/20 focus:border-signal focus:ring-4"
+          className="field-control h-11"
         />
       </label>
 
@@ -187,7 +187,7 @@ export function CreateProjectForm() {
             <button
               type="button"
               onClick={addCompetitor}
-              className="inline-flex h-8 items-center gap-1 rounded-md border border-line bg-white px-2 text-xs font-semibold text-ink hover:border-signal hover:text-signal"
+              className="btn h-8 px-2 text-xs"
             >
               <Plus size={14} />
               添加竞品
@@ -200,7 +200,7 @@ export function CreateProjectForm() {
                   value={competitor}
                   onChange={(event) => updateCompetitor(index, event.target.value)}
                   placeholder={`竞品 ${index + 1}`}
-                  className="h-11 min-w-0 flex-1 rounded-md border border-line bg-white px-3 text-sm outline-none ring-signal/20 focus:border-signal focus:ring-4"
+                  className="field-control h-11 min-w-0 flex-1"
                 />
                 {competitors.length > 2 ? (
                   <button
@@ -208,7 +208,7 @@ export function CreateProjectForm() {
                     onClick={() => removeCompetitor(index)}
                     aria-label={`移除竞品 ${index + 1}`}
                     title="移除"
-                    className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-line bg-white text-steel hover:border-red-200 hover:text-danger"
+                    className="btn h-10 w-10 shrink-0 px-0 text-steel hover:border-red-200 hover:text-danger"
                   >
                     <X size={16} />
                   </button>
@@ -219,37 +219,37 @@ export function CreateProjectForm() {
         </div>
       ) : (
         <label className="block text-sm md:max-w-xs">
-          <span className="mb-2 block font-medium text-ink">竞品数量</span>
+          <span className="field-label">竞品数量</span>
           <input
             type="number"
             min={2}
             max={20}
             value={competitorCount}
             onChange={(event) => setCompetitorCount(Number(event.target.value))}
-            className="h-11 w-full rounded-md border border-line bg-white px-3 outline-none ring-signal/20 focus:border-signal focus:ring-4"
+            className="field-control h-11"
           />
         </label>
       )}
 
       <label className="block text-sm">
-        <span className="mb-2 block font-medium text-ink">其他说明</span>
+        <span className="field-label">其他说明</span>
         <textarea
           value={notes}
           onChange={(event) => setNotes(event.target.value)}
           placeholder="例如：重点关注价格、功能、用户评价、渠道策略。"
-          className="min-h-24 w-full rounded-md border border-line bg-white p-3 leading-6 outline-none ring-signal/20 focus:border-signal focus:ring-4"
+          className="field-control min-h-24 p-3 leading-6"
         />
       </label>
 
-      <div className="rounded-md border border-dashed border-line bg-white/70 p-3 text-sm leading-6 text-steel">
+      <div className="rounded-lg border border-dashed border-line bg-white/70 p-3 text-sm leading-6 text-steel">
         <div className="mb-1 font-semibold text-ink">任务预览</div>
         {generatedPreview}
       </div>
 
       <div className="grid gap-4 md:grid-cols-3">
         <label className="block text-sm">
-          <span className="mb-2 block font-medium text-ink">模式</span>
-          <select value={mode} onChange={(event) => setMode(event.target.value)} className="h-11 w-full rounded-md border border-line bg-white px-3">
+          <span className="field-label">模式</span>
+          <select value={mode} onChange={(event) => setMode(event.target.value)} className="field-control h-11">
             <option value="quick">快速分析</option>
             <option value="deep">深度分析</option>
             <option value="product">产品经理视角</option>
@@ -258,22 +258,22 @@ export function CreateProjectForm() {
           </select>
         </label>
         <label className="block text-sm">
-          <span className="mb-2 block font-medium text-ink">语言</span>
-          <select value={language} onChange={(event) => setLanguage(event.target.value)} className="h-11 w-full rounded-md border border-line bg-white px-3">
+          <span className="field-label">语言</span>
+          <select value={language} onChange={(event) => setLanguage(event.target.value)} className="field-control h-11">
             <option value="zh-CN">中文</option>
             <option value="en-US">English</option>
           </select>
         </label>
-        <label className="flex items-end gap-3 rounded-md border border-line bg-white px-3 py-2 text-sm">
-          <input type="checkbox" checked={deepReview} onChange={(event) => setDeepReview(event.target.checked)} />
-          <span className="pb-1 font-medium text-ink">启用深度审查</span>
+        <label className="flex items-center justify-between gap-3 rounded-lg border border-line bg-white px-3 py-2 text-sm shadow-hairline">
+          <span className="font-medium text-ink">启用深度审查</span>
+          <input className="h-5 w-5 accent-signal" type="checkbox" checked={deepReview} onChange={(event) => setDeepReview(event.target.checked)} />
         </label>
       </div>
-      {error ? <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm leading-6 text-danger">{error}</div> : null}
+      {error ? <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm leading-6 text-danger">{error}</div> : null}
       <button
         type="submit"
         disabled={isSubmitting}
-        className="inline-flex h-11 items-center gap-2 rounded-md bg-ink px-5 text-sm font-semibold text-white hover:bg-signal disabled:cursor-not-allowed disabled:opacity-60"
+        className="btn btn-primary h-11 px-5"
       >
         {isSubmitting ? <Sparkles size={18} className="animate-pulse" /> : <Play size={18} />}
         {isSubmitting ? "Agent 正在运行" : "创建并运行"}
@@ -309,7 +309,7 @@ function buildTaskPayload({
     }
     return {
       query: [
-        `分析任务：请分析${categoryValue}品类的竞品，包括 ${selectedCompetitors.join("、")}。`,
+        `任务模式：给定竞品。品类：${categoryValue}。竞品：${selectedCompetitors.join("、")}。`,
         normalizeNotes(notes),
         `报告视角：${modeLabels[mode] ?? mode}。`
       ]
@@ -322,7 +322,7 @@ function buildTaskPayload({
   const count = normalizeCompetitorCount(competitorCount);
   return {
     query: [
-      `分析任务：请分析${categoryValue}品类，由 AI 自动选择 ${count} 个合适竞品。`,
+      `任务模式：AI发现竞品。品类：${categoryValue}。竞品数量：${count}。`,
       normalizeNotes(notes),
       `报告视角：${modeLabels[mode] ?? mode}。`
     ]
@@ -382,7 +382,7 @@ function padCompetitorInputs(values: string[]) {
 
 function inputModeButtonClass(active: boolean) {
   return [
-    "inline-flex h-11 items-center justify-center gap-2 rounded-md border px-3 text-sm font-semibold transition",
-    active ? "border-signal bg-teal-50 text-signal" : "border-line bg-white text-steel hover:border-signal hover:text-signal"
+    "inline-flex h-11 items-center justify-center gap-2 rounded-lg border px-3 text-sm font-semibold shadow-hairline transition",
+    active ? "border-signal bg-signal/10 text-signal" : "border-line bg-white text-steel hover:border-signal hover:text-signal"
   ].join(" ");
 }
