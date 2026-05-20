@@ -44,7 +44,7 @@ export function ProjectAutoRunner({ projectId, autoRun, initialStatus }: { proje
         type="button"
         onClick={startRun}
         disabled={isRunning}
-        className="btn btn-primary h-9"
+        className="btn btn-primary h-10"
       >
         {isRunning ? <RefreshCw size={16} className="animate-spin" /> : <Play size={16} />}
         {isRunning ? "Agent 运行中" : "运行 DAG"}

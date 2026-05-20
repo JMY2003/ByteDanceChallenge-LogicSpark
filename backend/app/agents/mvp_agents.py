@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 from collections import Counter, defaultdict
+from typing import Any
 
 from sqlalchemy import delete, select
 
@@ -107,20 +108,71 @@ KNOWN_COMPETITORS = [
     "SharePoint",
 ]
 
-MVP_TASKS = [
+CORE_TASKS = [
     {"id": "intent", "agent": "IntentAgent", "depends_on": [], "priority": 1},
     {"id": "planner", "agent": "PlannerAgent", "depends_on": ["intent"], "priority": 2},
     {"id": "competitor_discovery", "agent": "CompetitorDiscoveryAgent", "depends_on": ["planner"], "priority": 3},
     {"id": "source_planning", "agent": "SourcePlanningAgent", "depends_on": ["competitor_discovery"], "priority": 4},
     {"id": "web_search", "agent": "WebSearchAgent", "depends_on": ["source_planning"], "priority": 5},
     {"id": "web_crawler", "agent": "WebCrawlerAgent", "depends_on": ["web_search"], "priority": 6},
-    {"id": "document_cleaner", "agent": "DocumentCleanerAgent", "depends_on": ["web_crawler"], "priority": 7},
-    {"id": "schema_extraction", "agent": "SchemaExtractionAgent", "depends_on": ["document_cleaner"], "priority": 8},
-    {"id": "evidence_builder", "agent": "EvidenceBuilderAgent", "depends_on": ["schema_extraction"], "priority": 9},
-    {"id": "analysis", "agent": "AnalysisAgent", "depends_on": ["evidence_builder"], "priority": 10},
-    {"id": "quality_gate", "agent": "QualityGateAgent", "depends_on": ["analysis"], "priority": 11},
-    {"id": "report_writer", "agent": "ReportWriterAgent", "depends_on": ["quality_gate"], "priority": 12},
+    {"id": "schema_extraction", "agent": "SchemaExtractionAgent", "depends_on": ["web_crawler"], "priority": 7},
+    {"id": "evidence_builder", "agent": "EvidenceBuilderAgent", "depends_on": ["schema_extraction"], "priority": 8},
 ]
+
+SPECIALIST_TASKS = [
+    {"id": "product_positioning", "agent": "ProductPositioningAgent", "depends_on": ["evidence_builder"], "priority": 9},
+    {"id": "feature_matrix", "agent": "FeatureMatrixAgent", "depends_on": ["evidence_builder"], "priority": 10},
+    {"id": "pricing_analysis", "agent": "PricingAnalysisAgent", "depends_on": ["evidence_builder"], "priority": 11},
+    {"id": "user_voice", "agent": "UserVoiceAgent", "depends_on": ["evidence_builder"], "priority": 12},
+    {"id": "technology_intelligence", "agent": "TechnologyIntelligenceAgent", "depends_on": ["evidence_builder"], "priority": 13},
+    {"id": "gtm", "agent": "GTMAgent", "depends_on": ["evidence_builder"], "priority": 14},
+    {
+        "id": "swot",
+        "agent": "SWOTAgent",
+        "depends_on": [
+            "product_positioning",
+            "feature_matrix",
+            "pricing_analysis",
+            "user_voice",
+            "technology_intelligence",
+            "gtm",
+        ],
+        "priority": 15,
+    },
+    {"id": "strategic_insight", "agent": "StrategicInsightAgent", "depends_on": ["swot"], "priority": 16},
+    {"id": "analysis", "agent": "AnalysisAgent", "depends_on": ["strategic_insight"], "priority": 17},
+]
+
+DEEP_REVIEW_TASKS = [
+    {"id": "fact_check", "agent": "FactCheckAgent", "depends_on": ["analysis"], "priority": 18},
+    {"id": "citation_check", "agent": "CitationCheckAgent", "depends_on": ["analysis"], "priority": 19},
+    {"id": "consistency_check", "agent": "ConsistencyCheckAgent", "depends_on": ["analysis"], "priority": 20},
+    {"id": "bias_detection", "agent": "BiasDetectionAgent", "depends_on": ["analysis"], "priority": 21},
+    {"id": "red_team", "agent": "RedTeamAgent", "depends_on": ["analysis"], "priority": 22},
+]
+
+
+def build_mvp_tasks(enable_deep_review: bool = True) -> list[dict]:
+    tasks = [*CORE_TASKS, *SPECIALIST_TASKS]
+    if enable_deep_review:
+        tasks.extend(DEEP_REVIEW_TASKS)
+        quality_depends_on = ["fact_check", "citation_check", "consistency_check", "bias_detection", "red_team"]
+        quality_priority = 23
+        report_priority = 24
+    else:
+        quality_depends_on = ["analysis"]
+        quality_priority = 18
+        report_priority = 19
+    tasks.extend(
+        [
+            {"id": "quality_gate", "agent": "QualityGateAgent", "depends_on": quality_depends_on, "priority": quality_priority},
+            {"id": "report_writer", "agent": "ReportWriterAgent", "depends_on": ["quality_gate"], "priority": report_priority},
+        ]
+    )
+    return [dict(task) for task in tasks]
+
+
+MVP_TASKS = build_mvp_tasks(True)
 
 REQUIRED_DIMENSIONS = [
     "product_positioning",
@@ -202,7 +254,7 @@ class PlannerAgent(BaseAgent):
                 "human_review_required": task["id"] == "web_search"
                 and input_data["dependency_outputs"].get("intent", {}).get("needs_competitor_confirmation", False),
             }
-            for task in MVP_TASKS
+            for task in build_mvp_tasks(bool(input_data["project"].get("enable_deep_review", True)))
         ]
         return {
             "dag": {
@@ -239,29 +291,43 @@ class WebSearchAgent(BaseAgent):
             {"competitor": competitor, "query": f"{competitor} official product features pricing reviews", "source_type": "mixed"}
             for competitor in competitors
         ]
-        semaphore = asyncio.Semaphore(6)
+        semaphore = asyncio.Semaphore(3)
 
         async def run_search(plan: dict) -> dict:
             async with semaphore:
                 competitor = plan.get("competitor", "unknown")
                 query = plan.get("query") or f"{competitor} official product features pricing reviews"
-                return await context.call_tool(
-                    "web_search",
-                    {
+                try:
+                    return await context.call_tool(
+                        "web_search",
+                        {
+                            "query": query,
+                            "competitor": competitor,
+                            "source_type": plan.get("source_type", "mixed"),
+                            "max_results": context.config.max_search_results_per_competitor,
+                        },
+                    )
+                except Exception as exc:
+                    return {
+                        "search_results": [],
+                        "search_error": describe_exception(exc),
                         "query": query,
                         "competitor": competitor,
-                        "source_type": plan.get("source_type", "mixed"),
-                        "max_results": context.config.max_search_results_per_competitor,
-                    },
-                )
+                    }
 
         search_outputs = await asyncio.gather(*(run_search(plan) for plan in plans))
+        failures: list[str] = []
         for result in search_outputs:
+            if result.get("search_error"):
+                failures.append(f"{result.get('competitor', 'unknown')}: {result.get('query', '')} -> {result['search_error']}")
             for item in result.get("search_results", []):
                 if item["url"] in seen_urls:
                     continue
                 seen_urls.add(item["url"])
                 all_results.append(item)
+        if not all_results:
+            detail = "; ".join(failures[:6]) or "no provider returned results"
+            raise RuntimeError(f"Live search failed for all planned queries: {detail}")
         return {"search_results": all_results}
 
 
@@ -348,9 +414,8 @@ class SchemaExtractionAgent(BaseAgent):
 
     async def run(self, input_data: dict, context: AgentContext) -> dict:
         all_outputs = collect_outputs(input_data)
-        cleaned_output = all_outputs.get("document_cleaner", {}).get("payload", {})
         docs_output = all_outputs.get("web_crawler", {})
-        documents = cleaned_output.get("cleaned_documents") or docs_output.get("documents", [])
+        documents = docs_output.get("documents", [])
         intent = all_outputs.get("intent", {})
         industry = intent.get("industry", "")
         grouped: dict[str, list[dict]] = defaultdict(list)
@@ -371,6 +436,7 @@ class SchemaExtractionAgent(BaseAgent):
                         "source_url": document["url"],
                         "source_type": document.get("source_type", "unknown"),
                         "competitor": document.get("competitor", "unknown"),
+                        "llm_cleaning": document.get("metadata", {}).get("llm_cleaning", {}),
                     },
                 )
                 existing = context.db.get(Chunk, chunk_id)
@@ -448,16 +514,37 @@ class EvidenceBuilderAgent(BaseAgent):
             document.id: document
             for document in context.db.scalars(select(Document).where(Document.project_id == context.project_id)).all()
         }
+        candidate_chunks = select_evidence_candidate_chunks(chunks, documents)
+        if candidate_chunks and not should_simulate(context.config):
+            all_outputs = collect_outputs(input_data)
+            evidence_annotations = await build_llm_evidence_annotations(
+                input_data.get("project", {}),
+                all_outputs.get("intent", {}),
+                candidate_chunks,
+                documents,
+                context,
+            )
+        else:
+            evidence_annotations = {}
         evidence_items: list[dict] = []
         evidence_by_competitor: dict[str, list[str]] = defaultdict(list)
-        for chunk in chunks:
+        for chunk in candidate_chunks:
             document = documents.get(chunk.document_id)
             if not document:
                 continue
             source_type = canonical_source_type(chunk.chunk_metadata.get("source_type", document.source_type))
             competitor = chunk.chunk_metadata.get("competitor", "unknown")
+            annotation = evidence_annotations.get(chunk.id, {})
+            if annotation and not bool(annotation.get("keep", True)):
+                continue
             evidence_id = stable_id("ev", context.project_id, chunk.id)
-            quote = compact_quote(chunk.text)
+            quote = evidence_quote_from_annotation(annotation, chunk.text)
+            summary = evidence_summary_from_annotation(annotation, chunk.text)
+            credibility = bounded_score(annotation.get("credibility_score"), credibility_score(source_type))
+            freshness = bounded_score(
+                annotation.get("freshness_score"),
+                0.35 if source_type in {"unverified", "crawl_failed", "search_snippet"} else 0.95,
+            )
             evidence = Evidence(
                 id=evidence_id,
                 project_id=context.project_id,
@@ -469,19 +556,39 @@ class EvidenceBuilderAgent(BaseAgent):
                 publisher=publisher_from_url(document.url),
                 published_at=None,
                 quote=quote,
-                summary=summarize_text(chunk.text),
-                credibility_score=credibility_score(source_type),
-                freshness_score=0.35 if source_type in {"unverified", "crawl_failed", "search_snippet"} else 0.95,
-                is_primary_source=source_type in {"official", "pricing", "docs", "changelog"},
-                is_potentially_outdated=document.url.startswith("offline://")
+                summary=summary,
+                credibility_score=credibility,
+                freshness_score=freshness,
+                is_primary_source=bool(annotation.get("is_primary_source", source_type in {"official", "pricing", "docs", "changelog"})),
+                is_potentially_outdated=bool(annotation.get("is_potentially_outdated", False))
+                or document.url.startswith("offline://")
                 or source_type in {"unverified", "crawl_failed", "search_snippet"},
                 supports_claim_ids=[],
-                evidence_metadata={"competitor": competitor},
+                evidence_metadata={
+                    "competitor": competitor,
+                    "llm_evidence": {
+                        "used": bool(annotation),
+                        "claim_area": annotation.get("claim_area"),
+                        "evidence_type": annotation.get("evidence_type"),
+                        "risk_note": annotation.get("risk_note"),
+                    },
+                },
                 retrieved_at=utc_now(),
             )
             context.db.add(evidence)
             evidence_by_competitor[competitor].append(evidence_id)
             evidence_items.append(evidence_to_dict(evidence))
+
+        coverage_repairs = ensure_evidence_competitor_coverage(
+            context,
+            candidate_chunks,
+            documents,
+            evidence_items,
+            evidence_by_competitor,
+            evidence_annotations,
+        )
+        if candidate_chunks and not should_simulate(context.config):
+            validate_llm_evidence_coverage(candidate_chunks, evidence_items, allow_repaired=True)
 
         competitors = context.db.scalars(select(Competitor).where(Competitor.project_id == context.project_id)).all()
         for competitor in competitors:
@@ -497,7 +604,7 @@ class EvidenceBuilderAgent(BaseAgent):
             competitor.profile = profile
 
         context.db.commit()
-        return {"evidence": evidence_items}
+        return {"evidence": evidence_items, "coverage_repairs": coverage_repairs}
 
 
 class AnalysisAgent(BaseAgent):
@@ -514,6 +621,7 @@ class AnalysisAgent(BaseAgent):
         all_outputs = collect_outputs(input_data)
         intent = all_outputs.get("intent", {})
         payload = build_deterministic_analysis(input_data["project"], intent, competitors, evidence, context.project_id)
+        payload = merge_specialist_outputs(payload, all_outputs, context.project_id, {item.id for item in evidence})
 
         if not should_simulate(context.config):
             llm_payload = await context.complete_json(
@@ -571,7 +679,7 @@ class ReportWriterAgent(BaseAgent):
                 markdown_payload.get("markdown"),
                 competitors=competitors,
                 evidence=evidence,
-                required_sections=["执行摘要", "关键结论", "竞品对比表", "功能/能力矩阵", "证据质量与风险", "引用来源"],
+                required_sections=["执行摘要", "决策建议", "关键结论", "竞品对比表", "功能/能力矩阵", "证据质量与风险", "引用来源"],
             )
             report_synthesis["mode"] = "llm_final_markdown"
         markdown = make_citations_readable(markdown, evidence, context.project_id)
@@ -725,15 +833,28 @@ def report_llm_prompt(project: dict, competitors: list[Competitor], evidence: li
         for item in evidence[:20]
     ]
     return f"""
-Rewrite the existing Markdown report into a polished product-manager-facing competitive intelligence report.
+Rewrite the existing Markdown report into a polished, decision-ready competitive intelligence report.
+
+Audience:
+- Product managers, founders, strategy analysts, or investment researchers who need to make a practical decision after reading.
 
 Hard constraints:
 - Return JSON with a single key: markdown.
 - Use the project language: {project.get("language", "zh-CN")}.
 - Preserve evidence traceability. Use only evidence_ids that appear below; never invent evidence IDs, URLs, claims, prices, certifications, or dates.
 - Keep unsupported or volatile facts cautious and mark them as needing live verification.
-- Keep these report sections where applicable: 执行摘要, 关键结论, 竞品对比表, 功能/能力矩阵, 定价与商业化信号, 证据质量与风险, 下一步验证清单, 引用来源.
+- Keep these report sections where applicable: 执行摘要, 决策建议, 关键结论, 竞品对比表, 功能/能力矩阵, 定价与商业化信号, 证据质量与风险, 下一步验证清单, 引用来源.
 - Do not include Markdown code fences around the report.
+
+Editorial requirements:
+- Do not write a laundry list. Every section must answer "so what" and "what should the reader do with this".
+- Start with a short bottom-line executive summary, then decision recommendations, then supporting evidence.
+- Consolidate repeated facts. Prefer 3 to 5 high-value judgments over many shallow bullets.
+- Use tables only when they help comparison. Keep table cells concise and decision-oriented.
+- Avoid raw agent/process language except in a short appendix if needed.
+- Avoid exposing internal confidence metadata after every sentence. Mention confidence/risk naturally and cite evidence.
+- For each major recommendation, include: recommendation, why it matters, uncertainty/risk, and cited support.
+- If evidence is weak, explicitly say which conclusion is tentative instead of presenting it as equal to well-supported conclusions.
 
 Project:
 {json.dumps(project, ensure_ascii=False)}
@@ -759,6 +880,36 @@ REPORT_MARKDOWN_SCHEMA = {
     "type": "object",
     "properties": {"markdown": {"type": "string"}},
     "required": ["markdown"],
+    "additionalProperties": False,
+}
+
+
+EVIDENCE_SELECTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "evidence": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "chunk_id": {"type": "string"},
+                    "keep": {"type": "boolean"},
+                    "claim_area": {"type": "string"},
+                    "evidence_type": {"type": "string"},
+                    "quote": {"type": "string"},
+                    "summary": {"type": "string"},
+                    "credibility_score": {"type": "number"},
+                    "freshness_score": {"type": "number"},
+                    "is_primary_source": {"type": "boolean"},
+                    "is_potentially_outdated": {"type": "boolean"},
+                    "risk_note": {"type": "string"},
+                },
+                "required": ["chunk_id", "keep", "quote", "summary", "credibility_score", "freshness_score"],
+                "additionalProperties": True,
+            },
+        }
+    },
+    "required": ["evidence"],
     "additionalProperties": False,
 }
 
@@ -1239,6 +1390,9 @@ Rules:
 - Use only competitors and evidence IDs below.
 - Correct domain drift. If the task is about phones, do not use SaaS/AI-office dimensions. If the task is about another category, choose dimensions appropriate to that category.
 - Keep claims decision-useful and cautious. Do not invent exact specs, prices, rankings, market share, dates, or review sentiment beyond evidence.
+- Synthesize instead of listing. Focus on what matters for selection, positioning, risk, and next verification.
+- Each strategic insight should contain an implication, not just a restatement of a competitor fact.
+- Competitor cards should explain the competitor's role in the market map, who should care, and the main uncertainty.
 - Return concise JSON; the renderer will build the final Markdown.
 
 Competitor profiles:
@@ -1440,6 +1594,155 @@ def build_deterministic_analysis(
         "evidence_gaps": evidence_gaps,
         "source_mix": source_mix,
     }
+
+
+SPECIALIST_OUTPUT_KEYS = [
+    "product_positioning",
+    "feature_matrix",
+    "pricing_analysis",
+    "user_voice",
+    "technology_intelligence",
+    "gtm",
+    "swot",
+    "strategic_insight",
+]
+
+
+def merge_specialist_outputs(base_payload: dict, agent_outputs: dict, project_id: str, valid_evidence_ids: set[str]) -> dict:
+    merged = dict(base_payload)
+    source_mix = dict(merged.get("source_mix", {}))
+    used_outputs: list[str] = []
+    specialist_claims: list[dict] = []
+    specialist_insights: list[dict] = []
+
+    for output_key in SPECIALIST_OUTPUT_KEYS:
+        output = agent_outputs.get(output_key, {})
+        payload = output.get("payload", {}) if isinstance(output, dict) else {}
+        if not isinstance(payload, dict) or not payload:
+            continue
+        used_outputs.append(output_key)
+        specialist_claims.extend(
+            specialist_findings_to_claims(
+                payload.get("findings", []),
+                project_id,
+                valid_evidence_ids,
+                default_agent=str(output.get("agent") or output_key),
+            )
+        )
+
+    feature_payload = agent_outputs.get("feature_matrix", {}).get("payload", {})
+    if isinstance(feature_payload, dict) and isinstance(feature_payload.get("feature_matrix"), dict):
+        merged["feature_matrix"] = merge_feature_matrices(
+            merged.get("feature_matrix", {}),
+            feature_payload["feature_matrix"],
+            valid_evidence_ids,
+        )
+
+    pricing_payload = agent_outputs.get("pricing_analysis", {}).get("payload", {})
+    if isinstance(pricing_payload, dict) and isinstance(pricing_payload.get("pricing_table"), list):
+        merged["pricing_table"] = merge_pricing_tables(
+            merged.get("pricing_table", []),
+            pricing_payload["pricing_table"],
+            valid_evidence_ids,
+        )
+        specialist_insights.extend(pricing_payload.get("insights", []))
+
+    strategic_payload = agent_outputs.get("strategic_insight", {}).get("payload", {})
+    if isinstance(strategic_payload, dict):
+        specialist_insights.extend(strategic_payload.get("strategic_insights", []))
+
+    swot_payload = agent_outputs.get("swot", {}).get("payload", {})
+    if isinstance(swot_payload, dict) and swot_payload.get("swot"):
+        source_mix["swot_profiles_written"] = True
+
+    merged["claims"] = dedupe_claim_dicts([*merged.get("claims", []), *specialist_claims])[:40]
+    merged["strategic_insights"] = dedupe_insights(
+        [*merged.get("strategic_insights", []), *normalize_specialist_insights(specialist_insights, valid_evidence_ids)]
+    )[:14]
+    source_mix["specialist_outputs_used"] = used_outputs
+    merged["source_mix"] = source_mix
+    return merged
+
+
+def specialist_findings_to_claims(values: object, project_id: str, valid_evidence_ids: set[str], default_agent: str) -> list[dict]:
+    if not isinstance(values, list):
+        return []
+    claims: list[dict] = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        text = compact_quote(str(item.get("claim") or item.get("claim_text") or "").strip(), max_len=420)
+        if not text:
+            continue
+        evidence_ids = sanitize_evidence_ids(item.get("evidence_ids", []), valid_evidence_ids)
+        claim_type = normalize_claim_type(str(item.get("claim_type", "inference")))
+        claims.append(
+            create_claim(
+                project_id,
+                claim_text=text,
+                claim_type=claim_type if evidence_ids or claim_type == "unknown" else "unknown",
+                subject=compact_quote(str(item.get("subject") or "overall"), max_len=100),
+                confidence=clamp_float(item.get("confidence", 0.55), 0.1, 0.88 if evidence_ids else 0.35),
+                evidence_ids=evidence_ids[:5],
+                created_by=str(item.get("created_by_agent") or default_agent),
+                risk_level=normalize_risk(str(item.get("risk_level", "medium"))),
+            )
+        )
+    return claims
+
+
+def normalize_specialist_insights(values: object, valid_evidence_ids: set[str]) -> list[dict]:
+    if not isinstance(values, list):
+        return []
+    insights: list[dict] = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        claim = compact_quote(str(item.get("claim", "")).strip(), max_len=420)
+        if not claim:
+            continue
+        evidence_ids = sanitize_evidence_ids(item.get("evidence_ids", []), valid_evidence_ids)
+        insights.append(
+            {
+                "type": normalize_claim_type(str(item.get("type", "inference"))),
+                "claim": claim,
+                "basis": compact_quote(str(item.get("basis", "来自专家 Agent 的证据综合。")), max_len=240),
+                "evidence_ids": evidence_ids[:6],
+                "confidence": clamp_float(item.get("confidence", 0.6), 0.1, 0.88 if evidence_ids else 0.35),
+                "risk_level": normalize_risk(str(item.get("risk_level", "medium"))),
+            }
+        )
+    return insights
+
+
+def merge_feature_matrices(base_matrix: dict, specialist_matrix: dict, valid_evidence_ids: set[str]) -> dict:
+    merged = {str(feature): dict(values) for feature, values in base_matrix.items() if isinstance(values, dict)}
+    for feature, values in specialist_matrix.items():
+        if not isinstance(values, dict):
+            continue
+        existing = merged.setdefault(str(feature), {})
+        for competitor, cell in values.items():
+            if not isinstance(cell, dict):
+                continue
+            normalized_cell = dict(cell)
+            normalized_cell["evidence_ids"] = sanitize_evidence_ids(cell.get("evidence_ids", []), valid_evidence_ids)
+            existing[str(competitor)] = {**existing.get(str(competitor), {}), **normalized_cell}
+    return merged
+
+
+def merge_pricing_tables(base_rows: list[dict], specialist_rows: list[dict], valid_evidence_ids: set[str]) -> list[dict]:
+    by_name = {str(row.get("competitor", "")).casefold(): dict(row) for row in base_rows if isinstance(row, dict)}
+    for row in specialist_rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("competitor", "")).strip()
+        if not name:
+            continue
+        existing = by_name.get(name.casefold(), {"competitor": name})
+        merged_row = {**existing, **row}
+        merged_row["evidence_ids"] = sanitize_evidence_ids(row.get("evidence_ids", existing.get("evidence_ids", [])), valid_evidence_ids)
+        by_name[name.casefold()] = merged_row
+    return list(by_name.values())
 
 
 def analysis_llm_prompt(project: dict, intent: dict, competitors: list[Competitor], evidence: list[Evidence], base_payload: dict) -> str:
@@ -2231,6 +2534,361 @@ def infer_topic(query: str, industry: str, companies: list[str]) -> str:
     return f"{industry} 竞品分析"
 
 
+def select_evidence_candidate_chunks(
+    chunks: list[Chunk],
+    documents: dict[str, Document],
+    max_per_competitor: int = 10,
+    max_total: int = 40,
+) -> list[Chunk]:
+    grouped: dict[str, list[Chunk]] = defaultdict(list)
+    for chunk in chunks:
+        document = documents.get(chunk.document_id)
+        if not document or not chunk.text.strip():
+            continue
+        competitor = str(chunk.chunk_metadata.get("competitor", "unknown") or "unknown")
+        grouped[competitor].append(chunk)
+
+    selected: list[Chunk] = []
+    seen_ids: set[str] = set()
+    for competitor in sorted(grouped):
+        ranked = sorted(grouped[competitor], key=lambda item: evidence_candidate_score(item, documents), reverse=True)
+        competitor_selected: list[Chunk] = []
+        seen_signatures: set[str] = set()
+        required_source_types = ["official", "pricing", "review", "news", "docs", "changelog"]
+
+        for source_type in required_source_types:
+            for chunk in ranked:
+                if len(competitor_selected) >= max_per_competitor:
+                    break
+                if canonical_source_type(chunk.chunk_metadata.get("source_type")) != source_type:
+                    continue
+                if add_candidate_chunk(chunk, competitor_selected, seen_ids, seen_signatures):
+                    break
+
+        for chunk in ranked:
+            if len(competitor_selected) >= max_per_competitor:
+                break
+            add_candidate_chunk(chunk, competitor_selected, seen_ids, seen_signatures)
+        selected.extend(competitor_selected)
+
+    if len(selected) <= max_total:
+        return selected
+    by_competitor: dict[str, list[Chunk]] = defaultdict(list)
+    for chunk in selected:
+        by_competitor[str(chunk.chunk_metadata.get("competitor", "unknown") or "unknown")].append(chunk)
+    final: list[Chunk] = []
+    per_competitor = max(4, max_total // max(1, len(by_competitor)))
+    for competitor in sorted(by_competitor):
+        final.extend(by_competitor[competitor][:per_competitor])
+    if len(final) < max_total:
+        final_ids = {chunk.id for chunk in final}
+        for chunk in selected:
+            if chunk.id not in final_ids:
+                final.append(chunk)
+                final_ids.add(chunk.id)
+            if len(final) >= max_total:
+                break
+    return final[:max_total]
+
+
+def add_candidate_chunk(chunk: Chunk, selected: list[Chunk], seen_ids: set[str], seen_signatures: set[str]) -> bool:
+    if chunk.id in seen_ids:
+        return False
+    signature = evidence_text_signature(chunk.text)
+    if signature and signature in seen_signatures:
+        return False
+    seen_ids.add(chunk.id)
+    if signature:
+        seen_signatures.add(signature)
+    selected.append(chunk)
+    return True
+
+
+def evidence_candidate_score(chunk: Chunk, documents: dict[str, Document]) -> tuple[int, int, int, int]:
+    document = documents.get(chunk.document_id)
+    source_type = canonical_source_type(chunk.chunk_metadata.get("source_type", document.source_type if document else "unknown"))
+    source_priority = {
+        "official": 90,
+        "pricing": 86,
+        "docs": 80,
+        "changelog": 76,
+        "review": 72,
+        "news": 68,
+        "github": 64,
+        "search_snippet": 35,
+        "crawl_failed": 10,
+        "unverified": 8,
+    }.get(source_type, 45)
+    text = chunk.text
+    signal_score = evidence_signal_score(text)
+    length_score = min(80, len(text) // 12)
+    position_score = max(0, 50 - int(chunk.start_char or 0) // 240)
+    return (source_priority, signal_score, length_score, position_score)
+
+
+def evidence_signal_score(text: str) -> int:
+    patterns = [
+        r"价格|售价|报价|pricing|price|¥|￥|元",
+        r"功能|feature|支持|能力|自动化|看板|任务|协作|屏幕|续航|影像|芯片|性能",
+        r"用户|评价|review|评分|口碑|投诉|优点|缺点",
+        r"官方|发布|更新|changelog|release|安全|集成|API",
+        r"客户|案例|市场|份额|增长|渠道|生态|伙伴",
+    ]
+    score = 0
+    for pattern in patterns:
+        if re.search(pattern, text, flags=re.I):
+            score += 20
+    return score
+
+
+def evidence_text_signature(text: str) -> str:
+    normalized = re.sub(r"\W+", "", text.lower())[:180]
+    return normalized
+
+
+async def build_llm_evidence_annotations(
+    project: dict,
+    intent: dict,
+    chunks: list[Chunk],
+    documents: dict[str, Document],
+    context: AgentContext,
+) -> dict[str, dict[str, Any]]:
+    usable_chunks = [chunk for chunk in chunks if chunk.document_id in documents and chunk.text.strip()]
+    if not usable_chunks:
+        raise ValueError("EvidenceBuilderAgent has no usable chunks to evaluate.")
+    annotations: dict[str, dict[str, Any]] = {}
+    for batch in batch_sequence(usable_chunks, 10):
+        payload = await context.complete_json(
+            evidence_selection_prompt(project, intent, batch, documents),
+            EVIDENCE_SELECTION_SCHEMA,
+            max_tokens=3600,
+        )
+        for item in payload.get("evidence", []):
+            if not isinstance(item, dict):
+                continue
+            chunk_id = str(item.get("chunk_id") or "").strip()
+            if chunk_id:
+                annotations[chunk_id] = item
+    expected_ids = {chunk.id for chunk in usable_chunks}
+    missing = sorted(expected_ids - set(annotations))
+    if missing:
+        chunk_by_id = {chunk.id: chunk for chunk in usable_chunks}
+        for chunk_id in missing:
+            chunk = chunk_by_id.get(chunk_id)
+            if chunk:
+                annotations[chunk_id] = default_evidence_annotation(chunk, documents)
+    return annotations
+
+
+def evidence_selection_prompt(project: dict, intent: dict, chunks: list[Chunk], documents: dict[str, Document]) -> str:
+    chunk_payload = []
+    for chunk in chunks:
+        document = documents[chunk.document_id]
+        cleaning = chunk.chunk_metadata.get("llm_cleaning", {}) if isinstance(chunk.chunk_metadata, dict) else {}
+        chunk_payload.append(
+            {
+                "chunk_id": chunk.id,
+                "competitor": chunk.chunk_metadata.get("competitor", "unknown"),
+                "source_type": canonical_source_type(chunk.chunk_metadata.get("source_type", document.source_type)),
+                "source_title": document.title,
+                "source_url": document.url,
+                "document_cleaning": {
+                    "is_relevant": cleaning.get("is_relevant"),
+                    "information_density": cleaning.get("information_density"),
+                    "key_facts": cleaning.get("key_facts", [])[:5] if isinstance(cleaning.get("key_facts"), list) else [],
+                    "summary": cleaning.get("summary"),
+                },
+                "text": compact_quote(chunk.text, max_len=650),
+            }
+        )
+    return f"""
+Select and summarize evidence from document chunks for a competitive-intelligence report.
+
+Language: {project.get("language", "zh-CN")}
+User task: {project.get("query")}
+Parsed intent: {json.dumps(intent, ensure_ascii=False)}
+
+Return exactly one JSON item for every input chunk_id.
+
+Rules:
+- keep=true only when the chunk contains useful factual evidence about the competitor, category, price, feature, positioning, review sentiment, channel, technology, or market signal.
+- For every competitor in this batch, keep at least one best available factual chunk when any chunk contains source-grounded product, pricing, feature, positioning, review, channel, technology, or market information.
+- keep=false for navigation text, cookie text, empty snippets, unrelated content, duplicate boilerplate, or generic search-result glue.
+- quote must be a short source-grounded snippet from the chunk text. Do not invent wording, specs, prices, dates, rankings, market share, or citations.
+- summary must be a concise Chinese evidence summary, not a broad conclusion.
+- credibility_score and freshness_score must be between 0 and 1.
+- evidence_type should be one of: feature, pricing, positioning, user_voice, technology, gtm, market_signal, risk, source_context, unknown.
+- claim_area should name the comparison dimension this evidence can support.
+- is_primary_source should be true for official/pricing/docs/changelog pages when the content actually comes from that source.
+- is_potentially_outdated should be true for crawl failures, search snippets, weak pages, old news, or volatile price/spec claims.
+
+Chunks:
+{json.dumps(chunk_payload, ensure_ascii=False)}
+"""
+
+
+def default_evidence_annotation(chunk: Chunk, documents: dict[str, Document]) -> dict[str, Any]:
+    document = documents.get(chunk.document_id)
+    source_type = canonical_source_type(chunk.chunk_metadata.get("source_type", document.source_type if document else "unknown"))
+    return {
+        "chunk_id": chunk.id,
+        "keep": True,
+        "claim_area": "source coverage",
+        "evidence_type": "source_context",
+        "quote": compact_quote(chunk.text, max_len=520),
+        "summary": summarize_text(chunk.text, max_len=220),
+        "credibility_score": min(0.68, credibility_score(source_type)),
+        "freshness_score": 0.55 if source_type in {"unverified", "crawl_failed", "search_snippet"} else 0.75,
+        "is_primary_source": source_type in {"official", "pricing", "docs", "changelog"},
+        "is_potentially_outdated": source_type in {"unverified", "crawl_failed", "search_snippet"},
+        "risk_note": "LLM evidence annotation omitted this chunk; kept a source-grounded default annotation for coverage and downstream QA.",
+    }
+
+
+def batch_sequence(items: list[Any], size: int) -> list[list[Any]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def evidence_quote_from_annotation(annotation: dict[str, Any], chunk_text_value: str) -> str:
+    quote = compact_quote(annotation.get("quote", ""), max_len=520)
+    text = normalize_for_match(chunk_text_value)
+    if quote and normalize_for_match(quote) in text:
+        return quote
+    if quote and len(quote) >= 24 and any(part and part in text for part in normalize_for_match(quote).split(" ")[:8]):
+        return quote
+    return compact_quote(chunk_text_value)
+
+
+def evidence_summary_from_annotation(annotation: dict[str, Any], chunk_text_value: str) -> str:
+    summary = compact_quote(annotation.get("summary", ""), max_len=260)
+    if summary and summary.lower() != "unknown":
+        return summary
+    return summarize_text(chunk_text_value)
+
+
+def ensure_evidence_competitor_coverage(
+    context: AgentContext,
+    chunks: list[Chunk],
+    documents: dict[str, Document],
+    evidence_items: list[dict],
+    evidence_by_competitor: dict[str, list[str]],
+    annotations: dict[str, dict[str, Any]],
+    min_items_per_competitor: int = 2,
+) -> list[dict]:
+    competitors = sorted(
+        {
+            str(chunk.chunk_metadata.get("competitor", "")).strip()
+            for chunk in chunks
+            if str(chunk.chunk_metadata.get("competitor", "")).strip()
+            and str(chunk.chunk_metadata.get("competitor", "")).strip() != "unknown"
+        }
+    )
+    coverage_counts: Counter[str] = Counter()
+    for item in evidence_items:
+        metadata = item.get("metadata", {})
+        if isinstance(metadata, dict):
+            competitor = str(metadata.get("competitor", "")).strip()
+            if competitor:
+                coverage_counts[competitor] += 1
+    undercovered = [competitor for competitor in competitors if coverage_counts[competitor] < min_items_per_competitor]
+    repairs: list[dict] = []
+    if not undercovered:
+        return repairs
+
+    chunks_by_competitor: dict[str, list[Chunk]] = defaultdict(list)
+    for chunk in chunks:
+        competitor = str(chunk.chunk_metadata.get("competitor", "unknown") or "unknown")
+        chunks_by_competitor[competitor].append(chunk)
+
+    existing_ids = {item.get("evidence_id") for item in evidence_items}
+    for competitor in undercovered:
+        ranked = sorted(chunks_by_competitor.get(competitor, []), key=lambda item: evidence_candidate_score(item, documents), reverse=True)
+        target_count = min_items_per_competitor
+        for chunk in ranked[: max(4, target_count + 2)]:
+            if coverage_counts[competitor] >= target_count:
+                break
+            document = documents.get(chunk.document_id)
+            if not document:
+                continue
+            evidence_id = stable_id("ev", context.project_id, chunk.id)
+            if evidence_id in existing_ids:
+                continue
+            source_type = canonical_source_type(chunk.chunk_metadata.get("source_type", document.source_type))
+            annotation = annotations.get(chunk.id, {})
+            quote = evidence_quote_from_annotation(annotation, chunk.text)
+            summary = evidence_summary_from_annotation(annotation, chunk.text)
+            credibility = min(
+                bounded_score(annotation.get("credibility_score"), credibility_score(source_type)),
+                0.72,
+            )
+            evidence = Evidence(
+                id=evidence_id,
+                project_id=context.project_id,
+                document_id=document.id,
+                chunk_id=chunk.id,
+                source_url=document.url,
+                source_title=document.title,
+                source_type=source_type,
+                publisher=publisher_from_url(document.url),
+                published_at=None,
+                quote=quote,
+                summary=summary,
+                credibility_score=credibility,
+                freshness_score=bounded_score(annotation.get("freshness_score"), 0.55),
+                is_primary_source=bool(annotation.get("is_primary_source", source_type in {"official", "pricing", "docs", "changelog"})),
+                is_potentially_outdated=True
+                if source_type in {"unverified", "crawl_failed", "search_snippet"}
+                else bool(annotation.get("is_potentially_outdated", False)),
+                supports_claim_ids=[],
+                evidence_metadata={
+                    "competitor": competitor,
+                    "coverage_repair": {
+                        "used": True,
+                        "reason": "LLM evidence selection dropped every candidate for this competitor; kept the strongest real source chunk to preserve competitor coverage.",
+                        "llm_keep": annotation.get("keep"),
+                        "llm_risk_note": annotation.get("risk_note"),
+                    },
+                    "llm_evidence": {
+                        "used": bool(annotation),
+                        "claim_area": annotation.get("claim_area"),
+                        "evidence_type": annotation.get("evidence_type"),
+                        "risk_note": annotation.get("risk_note"),
+                    },
+                },
+                retrieved_at=utc_now(),
+            )
+            context.db.add(evidence)
+            item = evidence_to_dict(evidence)
+            evidence_items.append(item)
+            evidence_by_competitor[competitor].append(evidence_id)
+            existing_ids.add(evidence_id)
+            coverage_counts[competitor] += 1
+            repairs.append({"competitor": competitor, "evidence_id": evidence_id, "chunk_id": chunk.id, "source_type": source_type})
+    return repairs
+
+
+def bounded_score(value: object, default: float) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(1.0, round(score, 2)))
+
+
+def normalize_for_match(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+
+def validate_llm_evidence_coverage(chunks: list[Chunk], evidence_items: list[dict], allow_repaired: bool = False) -> None:
+    if not evidence_items:
+        raise ValueError("EvidenceBuilderAgent LLM did not keep any evidence items.")
+    competitors = {chunk.chunk_metadata.get("competitor", "unknown") for chunk in chunks if chunk.chunk_metadata.get("competitor")}
+    covered = {item.get("metadata", {}).get("competitor") for item in evidence_items if isinstance(item.get("metadata"), dict)}
+    missing = sorted(str(name) for name in competitors - covered if name and name != "unknown")
+    if missing and not allow_repaired:
+        raise ValueError(f"EvidenceBuilderAgent LLM did not keep evidence for competitors: {missing[:6]}")
+
+
 def chunk_text(text: str, chunk_size: int = 700, overlap: int = 80) -> list[tuple[int, int, str]]:
     if not text:
         return []
@@ -2283,12 +2941,48 @@ def sanitize_document_text(document: dict) -> dict:
     for key in ["url", "title", "content", "competitor", "source_type"]:
         if key in sanitized:
             sanitized[key] = strip_db_forbidden_chars(sanitized.get(key, ""))
+    sanitized["content"] = normalize_crawled_content(sanitized.get("content", ""))
     metadata = sanitized.get("metadata", {})
     if isinstance(metadata, dict):
         sanitized["metadata"] = sanitize_json_text(metadata)
+    else:
+        sanitized["metadata"] = {}
+    sanitized["metadata"] = {
+        **sanitized["metadata"],
+        "cleaning": {
+            "stage": "web_crawler",
+            "method": "deterministic_text_normalization",
+            "content_quality": crawled_content_quality(sanitized.get("content", "")),
+        },
+    }
     content = sanitized.get("content", "")
     sanitized["content_hash"] = hashlib.sha256(str(content).encode("utf-8")).hexdigest()
     return sanitized
+
+
+def normalize_crawled_content(text: object) -> str:
+    lines = []
+    seen: set[str] = set()
+    for line in str(text or "").replace("\x00", "").splitlines():
+        normalized = re.sub(r"\s+", " ", line).strip()
+        if not normalized:
+            continue
+        signature = normalized.casefold()
+        if signature in seen and len(normalized) < 160:
+            continue
+        seen.add(signature)
+        lines.append(normalized)
+    return "\n".join(lines)
+
+
+def crawled_content_quality(text: str) -> str:
+    if len(text) > 1200:
+        return "rich"
+    if len(text) > 320:
+        return "usable"
+    if len(text) > 80:
+        return "thin"
+    return "noise"
 
 
 def strip_db_forbidden_chars(value: object) -> str:
@@ -2797,6 +3491,13 @@ def compact_quote(text: str, max_len: int = 520) -> str:
     return text[:max_len] + ("..." if len(text) > max_len else "")
 
 
+def describe_exception(exc: Exception) -> str:
+    message = str(exc).strip()
+    if message:
+        return message[:320]
+    return exc.__class__.__name__
+
+
 def summarize_text(text: str, max_len: int = 240) -> str:
     text = compact_quote(text, max_len=max_len)
     return text if text else "unknown"
@@ -2952,12 +3653,13 @@ def render_markdown(
     gate = quality_gate.get("quality_gate", {})
     warnings = quality_gate.get("warnings", []) or gate.get("warnings", [])
     status = quality_gate.get("status") or gate.get("status", "pass_with_warnings")
+    decision_rows = build_decision_rows(cards)
     lines = [
-        f"# CompeteScope AI 竞品分析报告",
+        f"# mira 竞品分析报告",
         "",
         f"**分析任务**：{project['query']}",
         "",
-        f"**生成方式**：精简多 Agent 流程自动生成，包含需求解析、竞品发现、资料采集、证据抽取、综合分析、质量门禁和报告生成。",
+        f"**生成方式**：多 Agent 自动调研与证据约束生成，覆盖任务理解、竞品发现、公开资料采集、结构化抽取、综合判断和质量门禁。",
         "",
     ]
     if runtime_warnings:
@@ -2976,42 +3678,88 @@ def render_markdown(
         [
         "## 执行摘要",
         "",
-        f"- 分析范围：{scope_sentence(project, competitors)}",
-        f"- 已结构化竞品：{len(competitors)} 个；已构建证据：{len(evidence)} 条；来源结构：{source_mix_sentence(source_mix)}。",
-        f"- 质量评分：{quality['total']}/100；交付状态：{status}。",
-        f"- 使用建议：把本报告作为首轮筛选和问题清单，价格、口碑、具体参数等高波动信息需要在决策前刷新。",
+        executive_summary_text(project, competitors, evidence, analysis, quality, status, source_mix),
+        "",
+        "### 本报告适合怎么用",
+        "",
+        "- 用作首轮竞品筛选、对标维度设计和后续人工验证清单。",
+        "- 对价格、用户口碑、参数细节等高波动信息，按「下一步验证清单」在决策前刷新。",
+        "- 对证据不足的判断，不应直接进入对外材料或不可逆决策。",
+        "",
+        "## 决策建议",
+        "",
+        ]
+    )
+    if decision_rows:
+        lines.append("| 优先级 | 竞品角色 | 竞品 | 为什么值得看 | 主要不确定性 | 证据 |")
+        lines.append("|---:|---|---|---|---|---|")
+        for index, row in enumerate(decision_rows, start=1):
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        str(index),
+                        markdown_cell(row["role"]),
+                        markdown_cell(row["name"]),
+                        markdown_cell(row["why"]),
+                        markdown_cell(row["uncertainty"]),
+                        markdown_cell(citation_list(row.get("evidence_ids", []), project_id, evidence_by_id, limit=2)),
+                    ]
+                )
+                + " |"
+            )
+    else:
+        lines.append("当前证据不足，无法形成明确优先级建议。")
+
+    lines.extend(
+        [
         "",
         "## 关键结论",
         "",
         ]
     )
-    for insight in analysis.get("strategic_insights", [])[:8]:
-        lines.append(
-            f"- **{insight.get('type', 'insight')}**：{insight.get('claim', 'unknown')} "
-            f"[confidence: {float(insight.get('confidence', 0)):.2f}; risk: {insight.get('risk_level', 'medium')}; "
-            f"证据：{citation_list(insight.get('evidence_ids', []), project_id, evidence_by_id)}]"
-        )
+    for line in render_insight_blocks(analysis.get("strategic_insights", [])[:6], project_id, evidence_by_id):
+        lines.append(line)
     if not analysis.get("strategic_insights"):
         lines.extend(render_claim_lines([claim for claim in claims if claim.claim_type in {"inference", "recommendation", "opportunity"}][:6], project_id, evidence_by_id))
 
     lines.extend(["", "## 事实结论", ""])
-    lines.extend(render_claim_lines([claim for claim in claims if claim.claim_type in {"fact", "unknown"}][:10], project_id, evidence_by_id))
+    fact_claims = [claim for claim in claims if claim.claim_type in {"fact", "unknown"}][:8]
+    if fact_claims:
+        lines.append("| 事实/缺口 | 对报告的意义 | 证据 |")
+        lines.append("|---|---|---|")
+        for claim in fact_claims:
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        markdown_cell(claim.claim_text),
+                        markdown_cell(claim_implication(claim)),
+                        markdown_cell(citation_list(claim.evidence_ids, project_id, evidence_by_id)),
+                    ]
+                )
+                + " |"
+            )
+    else:
+        lines.append("当前没有足够证据生成事实类结论。")
 
     lines.extend(["", "## 竞品对比表", ""])
     if cards:
-        lines.append("| 竞品 | 适合场景 | 核心信号 | 价格/商业化 | 注意事项 | 证据 |")
+        lines.append("| 竞品 | 对标角色 | 适合场景 | 核心信号 | 主要风险 | 建议动作 |")
         lines.append("|---|---|---|---|---|---|")
+        row_by_name = {row["name"]: row for row in decision_rows}
         for card in cards:
+            row = row_by_name.get(card.get("name", ""), {})
             lines.append(
                 "| "
                 + " | ".join(
                     [
                         markdown_cell(card.get("name", "unknown")),
+                        markdown_cell(row.get("role", infer_competitor_role(card, 0))),
                         markdown_cell(card.get("best_for", "unknown")),
                         markdown_cell("、".join(card.get("strongest_signals", [])[:5]) or "unknown"),
-                        markdown_cell(card.get("pricing_signal", "unknown")),
                         markdown_cell(card.get("watch_out", "unknown")),
-                        markdown_cell(citation_list(card.get("evidence_ids", []), project_id, evidence_by_id)),
+                        markdown_cell(card.get("recommendation", "继续补充证据后复核。")),
                     ]
                 )
                 + " |"
@@ -3025,14 +3773,12 @@ def render_markdown(
     if feature_matrix and competitor_names:
         lines.append("| 维度 | " + " | ".join(markdown_cell(name) for name in competitor_names) + " |")
         lines.append("|---|" + "|".join("---" for _ in competitor_names) + "|")
-        for feature, values in feature_matrix.items():
+        for feature, values in list(feature_matrix.items())[:8]:
             cells = []
             for competitor in competitor_names:
                 item = values.get(competitor, {})
                 evidence_ids = item.get("evidence_ids", [])
-                status_text = "有信号" if item.get("support") else "未确认"
-                maturity = item.get("maturity", "unknown")
-                cells.append(markdown_cell(f"{status_text} / {maturity}" + (f" ({citation_list(evidence_ids, project_id, evidence_by_id)})" if evidence_ids else "")))
+                cells.append(markdown_cell(matrix_cell_label(item) + (f" ({citation_list(evidence_ids, project_id, evidence_by_id)})" if evidence_ids else "")))
             lines.append("| " + markdown_cell(feature) + " | " + " | ".join(cells) + " |")
     else:
         lines.append("当前证据不足，能力矩阵为 unknown。")
@@ -3067,23 +3813,27 @@ def render_markdown(
         lines.append("未采集到足够价格/商业化信号。")
 
     lines.extend(["", "## 单个竞品解读", ""])
-    for card in cards:
+    for card in cards[:8]:
         lines.extend(
             [
                 f"### {card.get('name', 'unknown')}",
                 "",
-                f"- 定位：{card.get('positioning', 'unknown')}",
-                f"- 适合场景：{card.get('best_for', 'unknown')}",
-                f"- 重点验证：{card.get('recommendation', 'unknown')}",
-                f"- 风险提示：{card.get('watch_out', 'unknown')}",
-                f"- 证据：{citation_list(card.get('evidence_ids', []), project_id, evidence_by_id)}",
+                f"{card.get('positioning', 'unknown')}",
+                "",
+                f"- **适合场景**：{card.get('best_for', 'unknown')}",
+                f"- **重点信号**：{'、'.join(card.get('strongest_signals', [])[:5]) or 'unknown'}",
+                f"- **需要警惕**：{card.get('watch_out', 'unknown')}",
+                f"- **建议动作**：{card.get('recommendation', 'unknown')}",
+                f"- **支撑证据**：{citation_list(card.get('evidence_ids', []), project_id, evidence_by_id)}",
                 "",
             ]
         )
 
     lines.extend(["## 证据质量与风险", ""])
     if source_mix:
-        lines.append(f"- 来源结构：{source_mix_sentence(source_mix)}。")
+        lines.append(f"- **来源结构**：{source_mix_sentence(source_mix)}。")
+        lines.append(f"- **证据规模**：共 {len(evidence)} 条证据，覆盖 {len(competitors)} 个竞品。")
+        lines.append(f"- **质量状态**：{status}，综合评分 {quality['total']}/100。")
     for warning in warnings:
         lines.append(f"- 质量门禁：{warning}")
     if evidence_gaps:
@@ -3134,11 +3884,150 @@ def render_markdown(
             "",
             "## Agent 执行说明",
             "",
-            "本报告由 IntentAgent、PlannerAgent、CompetitorDiscoveryAgent、SourcePlanningAgent、WebSearchAgent、WebCrawlerAgent、DocumentCleanerAgent、SchemaExtractionAgent、EvidenceBuilderAgent、AnalysisAgent、QualityGateAgent 和 ReportWriterAgent 生成。"
+            "本报告由 IntentAgent、PlannerAgent、CompetitorDiscoveryAgent、SourcePlanningAgent、WebSearchAgent、WebCrawlerAgent、SchemaExtractionAgent、EvidenceBuilderAgent、AnalysisAgent、QualityGateAgent 和 ReportWriterAgent 生成。"
             "生产模式会调用配置的搜索 API 和 LLM API；网页抓取遵守 robots.txt、限速和失败降级策略。",
         ]
     )
     return "\n".join(lines)
+
+
+def executive_summary_text(
+    project: dict,
+    competitors: list[Competitor],
+    evidence: list[Evidence],
+    analysis: dict,
+    quality: dict,
+    status: str,
+    source_mix: dict,
+) -> str:
+    cards = analysis.get("competitor_cards", [])
+    decision_rows = build_decision_rows(cards)
+    leading_names = "、".join(row["name"] for row in decision_rows[:3]) or "暂无明确短名单"
+    top_insight = ""
+    insights = analysis.get("strategic_insights", [])
+    if insights:
+        top_insight = normalize_text(str(insights[0].get("claim", "")))
+    if not top_insight:
+        top_insight = "当前证据更适合支持首轮筛选和后续验证设计，而不是直接形成最终采购/产品战略结论。"
+    return (
+        f"本次报告围绕「{compact_quote(project.get('query', ''), max_len=90)}」展开，"
+        f"共分析 {len(competitors)} 个竞品、整理 {len(evidence)} 条证据，来源结构为 {source_mix_sentence(source_mix)}。"
+        f"当前最值得优先阅读和复核的对象是：{leading_names}。"
+        f"核心判断是：{top_insight} "
+        f"综合质量评分为 {quality['total']}/100，状态为 {status}；因此本报告适合作为决策前的高质量草案，"
+        "但涉及价格、具体参数和口碑的部分仍需临近决策前刷新。"
+    )
+
+
+def build_decision_rows(cards: list[dict]) -> list[dict]:
+    ranked = sorted(
+        [card for card in cards if isinstance(card, dict)],
+        key=decision_card_score,
+        reverse=True,
+    )
+    rows: list[dict] = []
+    for index, card in enumerate(ranked):
+        name = normalize_text(str(card.get("name", "unknown")))
+        if not name:
+            continue
+        signals = "、".join(card.get("strongest_signals", [])[:3]) if isinstance(card.get("strongest_signals"), list) else ""
+        best_for = normalize_text(str(card.get("best_for") or "适合场景仍需补充证据。"))
+        why_parts = [part for part in [best_for, f"核心信号：{signals}" if signals else ""] if part]
+        rows.append(
+            {
+                "name": name,
+                "role": infer_competitor_role(card, index),
+                "why": compact_quote("；".join(why_parts), max_len=220),
+                "uncertainty": compact_quote(str(card.get("watch_out") or "价格、口碑和最新变化需要刷新验证。"), max_len=180),
+                "evidence_ids": card.get("evidence_ids", []) if isinstance(card.get("evidence_ids"), list) else [],
+            }
+        )
+    return rows
+
+
+def decision_card_score(card: dict) -> float:
+    score = float(card.get("evidence_count") or 0)
+    if isinstance(card.get("strongest_signals"), list):
+        score += 0.8 * len(card["strongest_signals"])
+    if isinstance(card.get("evidence_ids"), list):
+        score += 0.6 * len(card["evidence_ids"])
+    risk_text = str(card.get("watch_out") or "")
+    if re.search(r"不足|失败|缺少|unknown|低置信|兜底|无法", risk_text, re.I):
+        score -= 2.0
+    return score
+
+
+def infer_competitor_role(card: dict, rank: int) -> str:
+    name = str(card.get("name") or "")
+    risk_text = str(card.get("watch_out") or "")
+    signals = " ".join(card.get("strongest_signals", [])) if isinstance(card.get("strongest_signals"), list) else ""
+    if re.search(r"iphone|apple|苹果", name, re.I):
+        return "跨生态标杆"
+    if re.search(r"价格|性价比|value", signals, re.I):
+        return "价格/价值标杆"
+    if re.search(r"不足|失败|缺少|unknown|低置信|兜底|无法", risk_text, re.I):
+        return "待补证观察"
+    if rank == 0:
+        return "首轮重点对标"
+    if rank <= 2:
+        return "重点备选"
+    return "补充观察"
+
+
+def render_insight_blocks(insights: list[dict], project_id: str, evidence_by_id: dict[str, Evidence]) -> list[str]:
+    if not insights:
+        return []
+    labels = {
+        "fact": "事实判断",
+        "inference": "综合判断",
+        "recommendation": "行动建议",
+        "opportunity": "机会判断",
+        "unknown": "待验证判断",
+    }
+    blocks: list[str] = []
+    for index, insight in enumerate(insights, start=1):
+        kind = normalize_claim_type(str(insight.get("type", "inference")))
+        claim = normalize_text(str(insight.get("claim") or "unknown"))
+        basis = normalize_text(str(insight.get("basis") or "来自多源证据综合。"))
+        confidence = float(insight.get("confidence", 0) or 0)
+        risk = normalize_risk(str(insight.get("risk_level", "medium")))
+        evidence_text = citation_list(insight.get("evidence_ids", []), project_id, evidence_by_id)
+        blocks.append(
+            "\n".join(
+                [
+                    f"### {index}. {labels.get(kind, '综合判断')}",
+                    "",
+                    claim,
+                    "",
+                    f"- **为什么重要**：{basis}",
+                    f"- **可信度与风险**：{confidence_phrase(confidence)}，风险为{risk_label(risk)}",
+                    f"- **支撑证据**：{evidence_text}",
+                    "",
+                ]
+            )
+        )
+    return blocks
+
+
+def claim_implication(claim: Claim) -> str:
+    if claim.claim_type == "unknown":
+        return "该项不能作为强结论，需要补证或人工复核。"
+    if claim.risk_level == "high":
+        return "方向有参考价值，但风险高，决策前必须复核。"
+    if not claim.evidence_ids:
+        return "缺少引用支撑，只能作为低置信度线索。"
+    return "可作为当前报告的支撑事实，但高波动信息仍需刷新。"
+
+
+def matrix_cell_label(item: dict) -> str:
+    if not item or not item.get("support"):
+        return "待验证"
+    maturity = str(item.get("maturity", "medium")).lower()
+    if maturity in {"high", "strong", "mature"}:
+        return "强信号"
+    if maturity in {"low", "weak"}:
+        return "弱信号"
+    return "有信号"
 
 
 def scope_sentence(project: dict, competitors: list[Competitor]) -> str:
@@ -3168,8 +4057,41 @@ def source_mix_sentence(source_mix: dict) -> str:
     return "，".join(f"{labels.get(source_type, source_type)} {count}" for source_type, count in ordered[:6])
 
 
+REPORT_TEXT_REPLACEMENTS = {
+    "mainstream consumers": "主流消费者",
+    "office users": "办公用户",
+    "mobile photography users": "移动影像用户",
+    "mobile gamers": "手游用户",
+    "consumer electronics buyers": "消费电子用户",
+    "smartphone buyers": "手机用户",
+    "unknown": "待确认",
+    "needs live price verification": "需要实时价格验证",
+}
+
+
+def report_display_text(value: str) -> str:
+    text = value
+    for source, target in REPORT_TEXT_REPLACEMENTS.items():
+        text = re.sub(re.escape(source), target, text, flags=re.I)
+    text = re.sub(r"\s*,\s*", "、", text)
+    return text
+
+
+def confidence_phrase(confidence: float) -> str:
+    if confidence >= 0.75:
+        return "较高"
+    if confidence >= 0.5:
+        return "中等"
+    return "较低"
+
+
+def risk_label(value: str) -> str:
+    labels = {"low": "低", "medium": "中", "high": "高"}
+    return labels.get(value, value)
+
+
 def markdown_cell(value: object) -> str:
-    text = normalize_text(str(value if value is not None else "unknown"))
+    text = normalize_text(report_display_text(str(value if value is not None else "unknown")))
     text = text.replace("|", " / ")
     return text or "unknown"
 
@@ -3254,16 +4176,19 @@ def render_ppt_outline(project: dict, competitors: list[Competitor], claims: lis
     return "\n".join(lines)
 
 
-def citation_list(evidence_ids: list[str], project_id: str = "", evidence_by_id: dict[str, Evidence] | None = None) -> str:
+def citation_list(evidence_ids: list[str], project_id: str = "", evidence_by_id: dict[str, Evidence] | None = None, limit: int = 3) -> str:
     if not evidence_ids:
         return "unknown"
     if not project_id:
-        return ", ".join(evidence_ids)
+        return ", ".join(evidence_ids[:limit])
     citations = []
-    for evidence_id in evidence_ids:
+    visible_ids = evidence_ids[: max(1, limit)]
+    for evidence_id in visible_ids:
         evidence = evidence_by_id.get(evidence_id) if evidence_by_id else None
         label = readable_evidence_label(evidence) if evidence else evidence_id
         citations.append(f"[{markdown_link_label(label)}](/projects/{project_id}/evidence/{evidence_id})")
+    if len(evidence_ids) > len(visible_ids):
+        citations.append(f"另 {len(evidence_ids) - len(visible_ids)} 条")
     return ", ".join(citations)
 
 
@@ -3329,6 +4254,8 @@ def source_type_readable(source_type: str) -> str:
         "github": "开源",
         "third_party": "第三方",
         "search_snippet": "搜索摘要",
+        "unverified": "待核验",
+        "crawl_failed": "抓取失败",
     }
     return labels.get(canonical_source_type(source_type), canonical_source_type(source_type) or "来源")
 

@@ -5,6 +5,7 @@ import { FeatureCoverageChart } from "@/components/report/FeatureCoverageChart";
 import { InsightRail } from "@/components/report/InsightRail";
 import { QualityPanel } from "@/components/report/QualityPanel";
 import { MetricCard } from "@/components/ui/MetricCard";
+import { MiraBrand } from "@/components/ui/MiraBrand";
 import { ProjectNav } from "@/components/ui/ProjectNav";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { getAgentRuns, getDag, getEvidence, getProjectStatus, getReport } from "@/lib/api";
@@ -27,7 +28,8 @@ export default async function ProjectRunPage({ params, searchParams }: PageProps
   return (
     <main className="app-page">
       <div className="shell-wide space-y-5">
-        <header className="space-y-4">
+        <MiraBrand />
+        <header className="project-header-card space-y-4">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div className="eyebrow">Project {projectId}</div>

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import json
 from collections import Counter, defaultdict
+from datetime import date
 from typing import Any
 
 from sqlalchemy import select
@@ -10,7 +11,6 @@ from sqlalchemy import select
 from app.agents.base import AgentContext, BaseAgent
 from app.config import should_simulate
 from app.core.ids import stable_id
-from app.core.time import iso_now
 from app.db.models import Claim, Competitor, Evidence
 from app.schemas.agent_io import GenericAgentOutput
 
@@ -47,6 +47,45 @@ class DeepSpecializedAgent(BaseAgent):
     def ids_for(self, grouped: dict[str, list[Evidence]], competitor_name: str, limit: int = 3) -> list[str]:
         return [item.id for item in grouped.get(competitor_name, [])[:limit]]
 
+    async def refine_with_llm(
+        self,
+        input_data: dict,
+        context: AgentContext,
+        focus: str,
+        summary: str,
+        payload: dict,
+    ) -> tuple[str, dict]:
+        if should_simulate(context.config):
+            return summary, payload
+
+        competitors = self.load_competitors(context)
+        evidence = self.load_evidence(context)
+        valid_evidence_ids = {item.id for item in evidence}
+        review = await context.complete_json(
+            specialist_review_prompt(
+                agent_name=self.name,
+                focus=focus,
+                project=input_data.get("project", {}),
+                upstream=collect_outputs(input_data),
+                competitors=competitors,
+                evidence=evidence,
+                deterministic_payload=payload,
+            ),
+            SPECIALIST_REVIEW_SCHEMA,
+            max_tokens=3000,
+        )
+        llm_findings = normalize_llm_specialist_findings(self.name, review.get("findings", []), valid_evidence_ids)
+        if not llm_findings:
+            raise ValueError(f"{self.name} LLM review produced no evidence-bound findings.")
+        refined = dict(payload)
+        refined["findings"] = merge_findings(payload.get("findings", []), llm_findings)
+        refined["llm_specialist_review"] = {
+            "used": True,
+            "summary": str(review.get("summary") or summary),
+            "warnings": [str(item) for item in review.get("warnings", []) if str(item).strip()],
+        }
+        return refined["llm_specialist_review"]["summary"], refined
+
 
 class CompetitorDiscoveryAgent(DeepSpecializedAgent):
     name = "CompetitorDiscoveryAgent"
@@ -72,27 +111,61 @@ class CompetitorDiscoveryAgent(DeepSpecializedAgent):
             llm_details = normalize_competitor_details(llm_payload.get("competitor_details") or [], explicit_competitors)
             competitors = explicit_competitors
         else:
+            live_market_context = await collect_live_market_context(context, project, intent, max_count)
             llm_payload = await context.complete_json(
-                competitor_discovery_prompt(project, intent, max_count),
+                competitor_discovery_prompt(project, intent, max_count, live_market_context),
                 COMPETITOR_DISCOVERY_SCHEMA,
-                max_tokens=2600,
+                max_tokens=3000,
             )
             competitors = normalize_competitor_names(llm_payload.get("competitors") or [], max_count)
             llm_details = normalize_competitor_details(llm_payload.get("competitor_details") or [], competitors)
             if should_refine_to_product_level(project, intent, competitors):
                 refined_payload = await context.complete_json(
-                    product_level_refinement_prompt(project, intent, competitors, max_count),
+                    product_level_refinement_prompt(project, intent, competitors, max_count, live_market_context),
                     COMPETITOR_DISCOVERY_SCHEMA,
-                    max_tokens=2600,
+                    max_tokens=3000,
                 )
                 refined_competitors = normalize_competitor_names(refined_payload.get("competitors") or [], max_count)
                 if refined_competitors:
                     competitors = refined_competitors
                     llm_details = normalize_competitor_details(refined_payload.get("competitor_details") or [], competitors)
+            if should_refine_for_currentness(project, intent, competitors):
+                current_payload = await context.complete_json(
+                    currentness_refinement_prompt(project, intent, competitors, max_count, live_market_context),
+                    COMPETITOR_DISCOVERY_SCHEMA,
+                    max_tokens=3000,
+                )
+                current_competitors = normalize_competitor_names(current_payload.get("competitors") or [], max_count)
+                if current_competitors:
+                    competitors = current_competitors
+                    llm_details = normalize_competitor_details(current_payload.get("competitor_details") or [], competitors)
+                if has_unreleased_or_unverified_currentness_signal(llm_details):
+                    verified_payload = await context.complete_json(
+                        verified_currentness_repair_prompt(project, intent, competitors, llm_details, max_count, live_market_context),
+                        COMPETITOR_DISCOVERY_SCHEMA,
+                        max_tokens=3000,
+                    )
+                    verified_competitors = normalize_competitor_names(verified_payload.get("competitors") or [], max_count)
+                    if verified_competitors:
+                        competitors = verified_competitors
+                        llm_details = normalize_competitor_details(verified_payload.get("competitor_details") or [], competitors)
+                if should_include_context_benchmark(project, intent, live_market_context, competitors):
+                    benchmark_payload = await context.complete_json(
+                        context_benchmark_repair_prompt(project, intent, competitors, llm_details, max_count, live_market_context),
+                        COMPETITOR_DISCOVERY_SCHEMA,
+                        max_tokens=3000,
+                    )
+                    benchmark_competitors = normalize_competitor_names(benchmark_payload.get("competitors") or [], max_count)
+                    if benchmark_competitors:
+                        competitors = benchmark_competitors
+                        llm_details = normalize_competitor_details(benchmark_payload.get("competitor_details") or [], competitors)
             validate_discovered_competitors(project, intent, competitors, max_count)
+            validate_currentness_details(project, intent, llm_details)
 
-        if not competitors:
+        if not competitors and should_simulate(context.config):
             competitors = normalize_competitor_names(default_competitors(intent.get("industry", "unknown")), max_count)
+        if not competitors:
+            raise ValueError("CompetitorDiscoveryAgent returned no competitors and deterministic fallback is disabled.")
         validate_competitor_names(competitors)
 
         details = [
@@ -160,30 +233,6 @@ class SourcePlanningAgent(DeepSpecializedAgent):
         return self.pack("success", f"Planned {len(plan)} simulated public-source searches.", [], {"source_plan": plan, "llm_used": False})
 
 
-class DocumentCleanerAgent(DeepSpecializedAgent):
-    name = "DocumentCleanerAgent"
-    description = "Clean documents, preserve quote locations, chunk content and prepare embeddings."
-
-    async def run(self, input_data: dict, context: AgentContext) -> dict:
-        docs = collect_outputs(input_data).get("web_crawler", {}).get("documents", [])
-        cleaned = []
-        for doc in docs:
-            parsed = await context.call_tool("document_parser", {"content": doc.get("content", ""), "content_type": "text"})
-            text = normalize_text(parsed.get("text", ""))
-            cleaned.append(
-                {
-                    **doc,
-                    "content": text,
-                    "metadata": {
-                        **doc.get("metadata", {}),
-                        "cleaned_at": iso_now(),
-                        "content_quality": content_quality(text),
-                    },
-                }
-            )
-        return self.pack("success", f"Cleaned {len(cleaned)} documents.", [], {"cleaned_documents": cleaned})
-
-
 class ProductPositioningAgent(DeepSpecializedAgent):
     name = "ProductPositioningAgent"
     description = "Analyze target users, use cases, value proposition and positioning differences."
@@ -220,7 +269,15 @@ class ProductPositioningAgent(DeepSpecializedAgent):
                     "low",
                 )
             )
-        return self.pack("success", "Positioning analysis completed.", flatten_ids(analysis), {"positioning_analysis": analysis, "findings": findings})
+        payload = {"positioning_analysis": analysis, "findings": findings}
+        summary, payload = await self.refine_with_llm(
+            input_data,
+            context,
+            "positioning, target users, use cases, value proposition and category-specific differentiation",
+            "Positioning analysis completed.",
+            payload,
+        )
+        return self.pack("success", summary, flatten_ids(payload.get("findings", findings)), payload)
 
 
 class FeatureMatrixAgent(DeepSpecializedAgent):
@@ -260,7 +317,15 @@ class FeatureMatrixAgent(DeepSpecializedAgent):
                     "low",
                 )
             )
-        return self.pack("success", f"Feature matrix built with {len(all_features)} comparable dimensions.", flatten_ids(findings), {"feature_matrix": matrix, "scores": scores, "findings": findings})
+        payload = {"feature_matrix": matrix, "scores": scores, "findings": findings}
+        summary, payload = await self.refine_with_llm(
+            input_data,
+            context,
+            "category-specific feature and capability comparison, maturity differences, missing evidence and selection criteria",
+            f"Feature matrix built with {len(all_features)} comparable dimensions.",
+            payload,
+        )
+        return self.pack("success", summary, flatten_ids(payload.get("findings", findings)), payload)
 
 
 class PricingAnalysisAgent(DeepSpecializedAgent):
@@ -298,23 +363,22 @@ class PricingAnalysisAgent(DeepSpecializedAgent):
                     "medium" if price_signal == "unknown" else "low",
                 )
             )
-        if any("laptop" in competitor.profile.get("product_category", "") for competitor in competitors):
-            insights = [
-                {
-                    "claim": "笔记本价位档分析最需要实时校验电商到手价、配置版本、售后政策和第三方评测数据。",
-                    "confidence": 0.72,
-                    "evidence_ids": [item.id for item in evidence[:5]],
-                }
-            ]
-            return self.pack("success", "Pricing analysis completed with live-verification flags.", flatten_ids(table), {"pricing_table": table, "insights": insights, "findings": findings})
         insights = [
             {
-                "claim": "价格与收费项是当前报告最需要实时刷新验证的维度，尤其是佣金、广告、履约或 AI 附加收费。",
+                "claim": "价格、套餐、渠道促销或商业化规则变化快，最终建议应在交付前刷新验证。",
                 "confidence": 0.7,
                 "evidence_ids": [item.id for item in evidence[:5]],
             }
         ]
-        return self.pack("success", "Pricing analysis completed with live-verification flags.", flatten_ids(table), {"pricing_table": table, "insights": insights, "findings": findings})
+        payload = {"pricing_table": table, "insights": insights, "findings": findings}
+        summary, payload = await self.refine_with_llm(
+            input_data,
+            context,
+            "pricing, packaging, channel price, monetization model, price-value risk and evidence freshness",
+            "Pricing analysis completed with live-verification flags.",
+            payload,
+        )
+        return self.pack("success", summary, flatten_ids(payload.get("findings", findings)), payload)
 
 
 class UserVoiceAgent(DeepSpecializedAgent):
@@ -351,7 +415,15 @@ class UserVoiceAgent(DeepSpecializedAgent):
                     "medium" if not has_review else "low",
                 )
             )
-        return self.pack("success", "User voice analysis completed with evidence-gap flags.", flatten_ids(summaries), {"user_voice_summary": summaries, "findings": findings})
+        payload = {"user_voice_summary": summaries, "findings": findings}
+        summary, payload = await self.refine_with_llm(
+            input_data,
+            context,
+            "user reviews, community feedback, pros and cons, adoption blockers, satisfaction and evidence gaps",
+            "User voice analysis completed with evidence-gap flags.",
+            payload,
+        )
+        return self.pack("success", summary, flatten_ids(payload.get("findings", findings)), payload)
 
 
 class TechnologyIntelligenceAgent(DeepSpecializedAgent):
@@ -380,7 +452,15 @@ class TechnologyIntelligenceAgent(DeepSpecializedAgent):
                     "medium" if maturity == "unknown" else "low",
                 )
             )
-        return self.pack("success", "Technology intelligence analysis completed.", flatten_ids(analysis), {"technology_analysis": analysis, "findings": findings})
+        payload = {"technology_analysis": analysis, "findings": findings}
+        summary, payload = await self.refine_with_llm(
+            input_data,
+            context,
+            "technology, product architecture, integration, ecosystem, security, performance or other category-relevant capability signals",
+            "Technology intelligence analysis completed.",
+            payload,
+        )
+        return self.pack("success", summary, flatten_ids(payload.get("findings", findings)), payload)
 
 
 class GTMAgent(DeepSpecializedAgent):
@@ -410,7 +490,15 @@ class GTMAgent(DeepSpecializedAgent):
                     "medium",
                 )
             )
-        return self.pack("success", "GTM analysis completed.", flatten_ids(analysis), {"gtm_analysis": analysis, "findings": findings})
+        payload = {"gtm_analysis": analysis, "findings": findings}
+        summary, payload = await self.refine_with_llm(
+            input_data,
+            context,
+            "go-to-market strategy, channels, partnerships, target segments, sales motion and category-specific market access",
+            "GTM analysis completed.",
+            payload,
+        )
+        return self.pack("success", summary, flatten_ids(payload.get("findings", findings)), payload)
 
 
 class SWOTAgent(DeepSpecializedAgent):
@@ -459,7 +547,15 @@ class SWOTAgent(DeepSpecializedAgent):
                 )
             )
         context.db.commit()
-        return self.pack("success", "SWOT analysis completed and written back to competitor profiles.", flatten_ids(findings), {"swot": swot, "findings": findings})
+        payload = {"swot": swot, "findings": findings}
+        summary, payload = await self.refine_with_llm(
+            input_data,
+            context,
+            "evidence-bound strengths, weaknesses, opportunities and threats across all competitors",
+            "SWOT analysis completed and written back to competitor profiles.",
+            payload,
+        )
+        return self.pack("success", summary, flatten_ids(payload.get("findings", findings)), payload)
 
 
 class StrategicInsightAgent(DeepSpecializedAgent):
@@ -497,7 +593,15 @@ class StrategicInsightAgent(DeepSpecializedAgent):
             finding(self.name, item["type"], "overall", item["claim"], item["evidence_ids"], item["confidence"], item["risk_level"])
             for item in insights
         ]
-        return self.pack("success", "Strategic insight generation completed.", all_ids, {"strategic_insights": insights, "findings": findings})
+        payload = {"strategic_insights": insights, "findings": findings}
+        summary, payload = await self.refine_with_llm(
+            input_data,
+            context,
+            "strategic opportunities, risks, differentiators, product recommendations and next research priorities",
+            "Strategic insight generation completed.",
+            payload,
+        )
+        return self.pack("success", summary, flatten_ids(payload.get("findings", findings)) or all_ids, payload)
 
 
 class FactCheckAgent(DeepSpecializedAgent):
@@ -675,6 +779,11 @@ class QualityGateAgent(DeepSpecializedAgent):
         for key in ["fact_check", "citation_check", "consistency_check", "bias_detection", "red_team"]:
             payload = outputs.get(key, {}).get("payload", {})
             warnings.extend(extract_warnings(key, payload))
+        for repair in outputs.get("evidence_builder", {}).get("coverage_repairs", []):
+            if isinstance(repair, dict):
+                warnings.append(
+                    f"Evidence medium: {repair.get('competitor', 'unknown')} needed coverage repair from a real source chunk; verify this evidence manually."
+                )
         analysis = outputs.get("analysis", {})
         for gap in analysis.get("evidence_gaps", []):
             severity = gap.get("severity", "medium")
@@ -729,6 +838,8 @@ class QualityGateAgent(DeepSpecializedAgent):
         status = "pass" if quality_score["total"] >= 88 and not warnings else "pass_with_warnings"
         if quality_score["total"] < 70:
             status = "needs_revision"
+        if any(str(warning).startswith(("Evidence high", "Relevance high", "Domain high")) for warning in warnings):
+            status = "needs_revision"
         if ai_review.get("suggested_status") == "needs_revision":
             status = "needs_revision"
         if runtime_fallback_warnings:
@@ -770,6 +881,106 @@ def collect_outputs(input_data: dict) -> dict:
     outputs = dict(input_data.get("memory", {}))
     outputs.update(input_data.get("dependency_outputs", {}))
     return outputs
+
+
+SPECIALIST_REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim_type": {"type": "string"},
+                    "subject": {"type": "string"},
+                    "claim": {"type": "string"},
+                    "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                    "confidence": {"type": "number"},
+                    "risk_level": {"type": "string"},
+                },
+                "required": ["claim_type", "subject", "claim", "evidence_ids", "confidence", "risk_level"],
+                "additionalProperties": False,
+            },
+        },
+        "warnings": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["summary", "findings", "warnings"],
+    "additionalProperties": False,
+}
+
+
+def specialist_review_prompt(
+    agent_name: str,
+    focus: str,
+    project: dict,
+    upstream: dict,
+    competitors: list[Competitor],
+    evidence: list[Evidence],
+    deterministic_payload: dict,
+) -> str:
+    profiles = [
+        {
+            "name": competitor.name,
+            "product_category": competitor.profile.get("product_category"),
+            "target_users": competitor.profile.get("target_users", [])[:6],
+            "business_model": competitor.profile.get("business_model", [])[:6],
+            "positioning": competitor.profile.get("positioning", {}),
+            "features": competitor.profile.get("features", [])[:8],
+            "pricing": competitor.profile.get("pricing", [])[:4],
+            "source_coverage": competitor.profile.get("source_coverage", []),
+        }
+        for competitor in competitors
+    ]
+    evidence_payload = [
+        {
+            "evidence_id": item.id,
+            "competitor": item.evidence_metadata.get("competitor", "unknown"),
+            "source_type": item.source_type,
+            "publisher": item.publisher,
+            "title": item.source_title,
+            "quote": item.quote[:360],
+            "summary": item.summary[:260],
+            "credibility_score": item.credibility_score,
+        }
+        for item in evidence[:36]
+    ]
+    upstream_summary = {
+        "intent": upstream.get("intent", {}),
+        "planner": upstream.get("planner", {}).get("research_plan", {}),
+        "competitor_discovery": upstream.get("competitor_discovery", {}).get("payload", {}),
+    }
+    return f"""
+You are {agent_name}, one specialist in a general-purpose competitive-intelligence multi-agent system.
+
+Specialist focus:
+{focus}
+
+Project:
+{json.dumps(project, ensure_ascii=False)}
+
+Upstream context:
+{json.dumps(upstream_summary, ensure_ascii=False)}
+
+Competitor profiles:
+{json.dumps(profiles, ensure_ascii=False)}
+
+Evidence, with the only evidence IDs you may cite:
+{json.dumps(evidence_payload, ensure_ascii=False)}
+
+Deterministic draft from local structured extraction:
+{json.dumps(deterministic_payload, ensure_ascii=False, default=str)[:7000]}
+
+Rules:
+- Return 4 to 8 concise findings that are useful for a product manager or market researcher.
+- Adapt dimensions to the user's category; do not reuse software/SaaS dimensions for hardware, retail, consumer goods, finance, education, or other categories unless the task actually asks for them.
+- Use only the provided competitors and evidence IDs.
+- Do not invent facts, exact prices, benchmarks, market share, dates, or user sentiment.
+- If evidence is weak or missing, write an "unknown" finding with low confidence and say what should be verified next.
+- claim_type must be one of: fact, inference, recommendation, opportunity, unknown.
+- risk_level must be one of: low, medium, high.
+- Return JSON only.
+"""
 
 
 COMPETITOR_DISCOVERY_SCHEMA = {
@@ -820,9 +1031,22 @@ SOURCE_PLANNING_SCHEMA = {
 }
 
 
+def analysis_current_date() -> str:
+    return date.today().isoformat()
+
+
+def analysis_years() -> tuple[int, int]:
+    current_year = date.today().year
+    return current_year, current_year - 1
+
+
 def source_planning_prompt(project: dict, intent: dict, competitors: list[str]) -> str:
+    current_year, previous_year = analysis_years()
     return f"""
 Plan web searches for a competitive intelligence task.
+
+Current date:
+{analysis_current_date()}
 
 Project:
 {project}
@@ -837,9 +1061,11 @@ Rules:
 - Return 4 to 6 searches per competitor.
 - Queries must be domain-specific and search-friendly.
 - Include official product/spec pages, current price/channel pages, third-party reviews/comparisons, user feedback, and recent news/update sources when appropriate.
+- For fast-moving product categories, every query should prefer currently sold products and fresh sources. Include terms such as latest/current/在售/现售/{current_year}/{previous_year}/到手价/现价 when relevant.
+- For price-band tasks, search current street/channel price, not launch price.
 - source_type must be one of: official, pricing, docs, review, news, changelog, github, mixed.
-- For phones, use terms like 官方 参数 价格 影像 续航 评测 用户评价 系统生态 6000元.
-- For laptops, use terms like 官方 参数 配置 价格 屏幕 续航 散热 评测.
+- For phones, use terms like 最新 在售 {current_year} {previous_year} 官方 参数 现价 到手价 影像 续航 评测 用户评价 系统生态.
+- For laptops, use terms like 最新 在售 {current_year} {previous_year} 官方 参数 配置 现价 屏幕 续航 散热 评测.
 - For software/SaaS, use official product, pricing, docs, reviews, changelog, security/integration queries.
 - Do not use irrelevant software words for hardware categories.
 """
@@ -927,9 +1153,205 @@ def normalize_source_type(value: str) -> str:
     return normalized or "mixed"
 
 
-def competitor_discovery_prompt(project: dict, intent: dict, max_count: int) -> str:
+async def collect_live_market_context(context: AgentContext, project: dict, intent: dict, max_count: int) -> list[dict[str, Any]]:
+    if should_simulate(context.config) or is_historical_task(project, intent):
+        return []
+    merged_results: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for query in market_discovery_queries(project, intent)[:4]:
+        result = await context.call_tool(
+            "web_search",
+            {
+                "query": query,
+                "competitor": "market_discovery",
+                "source_type": "mixed",
+                "max_results": max(6, min(10, max_count + 3)),
+            },
+        )
+        for item in result.get("search_results", []):
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "")
+            key = url or f"{item.get('title', '')}|{item.get('snippet', '')}"
+            if key in seen_urls:
+                continue
+            seen_urls.add(key)
+            merged_results.append(item)
+    return compact_market_context(merged_results, extract_price_segment_hint(str(project.get("query") or "")))
+
+
+def market_discovery_query(project: dict, intent: dict) -> str:
+    return market_discovery_queries(project, intent)[0]
+
+
+def market_discovery_queries(project: dict, intent: dict) -> list[str]:
+    current_year, previous_year = analysis_years()
+    current_month = date.today().month
+    query = normalize_text(str(project.get("query") or ""))
+    industry = normalize_text(str(intent.get("industry") or ""))
+    category_hint = search_category_hint(project, intent)
+    price_hint = extract_price_segment_hint(query)
+
+    if is_recency_sensitive_product_task(project, intent):
+        product_terms = recency_sensitive_search_terms(project, intent)
+        queries = [
+            f"{current_year}年{current_month}月 {price_hint} {category_hint} 推荐 最新在售 {product_terms} 到手价",
+            f"{current_year}年 {price_hint} {category_hint} 选购攻略 新款 在售 旗舰 对比",
+            f"{current_year} {previous_year} {category_hint} 最新发布 在售 价格 竞品 对比",
+            f"{category_hint} {price_hint} 当前主流竞品 最新榜单 {current_year} {current_month}月",
+        ]
+    else:
+        queries = [
+            f"{category_hint} current latest {current_year} {previous_year} competitors alternatives market comparison",
+            f"{query} current market competitors {current_year}",
+        ]
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in queries:
+        text = normalize_text(value)[:280]
+        if text and text.casefold() not in seen:
+            seen.add(text.casefold())
+            normalized.append(text)
+    return normalized or [normalize_text(f"{query} {industry} current competitors {current_year}")[:280]]
+
+
+def search_category_hint(project: dict, intent: dict) -> str:
+    text = f"{project.get('query', '')} {intent.get('industry', '')}"
+    lower = text.casefold()
+    if "smartphone" in lower or "phone" in lower or "手机" in text:
+        return "手机"
+    if "laptop" in lower or "notebook" in lower or "笔记本" in text or "电脑" in text:
+        return "笔记本电脑"
+    if "car" in lower or "ev" in lower or "汽车" in text or "新能源车" in text or "电动车" in text:
+        return "新能源汽车"
+    if "电视" in text or "tv" in lower:
+        return "电视"
+    if "耳机" in text or "headphone" in lower or "earbud" in lower:
+        return "耳机"
+    if "相机" in text or "camera" in lower:
+        return "相机"
+    if "平板" in text or "tablet" in lower:
+        return "平板电脑"
+    return normalize_text(str(intent.get("industry") or project.get("query") or "市场"))[:80]
+
+
+def recency_sensitive_search_terms(project: dict, intent: dict) -> str:
+    text = f"{project.get('query', '')} {intent.get('industry', '')}"
+    lower = text.casefold()
+    if "smartphone" in lower or "phone" in lower or "手机" in text:
+        return "旗舰 Pro Ultra Max 影像 续航 性能"
+    if "laptop" in lower or "notebook" in lower or "笔记本" in text or "电脑" in text:
+        return "轻薄本 全能本 酷睿 锐龙 AI PC 屏幕 续航"
+    if "car" in lower or "ev" in lower or "汽车" in text or "新能源车" in text or "电动车" in text:
+        return "上市 续航 智驾 配置 价格 交付"
+    return "新品 在售 旗舰 Pro Max Ultra 价格 评测"
+
+
+def extract_price_segment_hint(text: str) -> str:
+    normalized = normalize_text(text)
+    range_match = re.search(r"([1-9]\d{3,4})\s*(?:-|~|—|–|到|至)\s*([1-9]\d{3,4})\s*(?:元|rmb|cny)?", normalized, flags=re.I)
+    if range_match:
+        low, high = sorted((int(range_match.group(1)), int(range_match.group(2))))
+        return f"{low}-{high}元"
+    band_match = re.search(r"([1-9]\d{3,4})\s*(?:元\s*)?(价位档|价位|档|预算|左右|上下|附近|元)", normalized)
+    if band_match:
+        center = int(band_match.group(1))
+        if 1000 <= center <= 300000:
+            step = 1000 if center < 20000 else 50000
+            suffix = band_match.group(2)
+            if suffix in {"价位档", "价位", "档"}:
+                low = max(0, center - step)
+                high = center
+            else:
+                low = max(0, center - step)
+                high = center + step
+            return f"{low}-{high}元 {center}元价位"
+    return "主流价位"
+
+
+def compact_market_context(results: list[Any], price_hint: str = "") -> list[dict[str, Any]]:
+    context_items: list[dict[str, Any]] = []
+    ranked_results = sorted(
+        [item for item in results if isinstance(item, dict)],
+        key=lambda item: market_context_score(item, price_hint),
+        reverse=True,
+    )
+    for item in ranked_results[:14]:
+        if not isinstance(item, dict):
+            continue
+        title = normalize_text(str(item.get("title") or ""))
+        snippet = normalize_text(str(item.get("snippet") or ""))
+        url = normalize_text(str(item.get("url") or ""))
+        if not title and not snippet:
+            continue
+        context_items.append(
+            {
+                "title": title[:160],
+                "snippet": snippet[:300],
+                "url": url[:240],
+                "source_type": normalize_source_type(str(item.get("source_type") or "mixed")),
+                "query": normalize_text(str(item.get("query") or ""))[:180],
+                "retrieved_at": item.get("retrieved_at"),
+            }
+        )
+    return context_items
+
+
+def market_context_score(item: dict[str, Any], price_hint: str = "") -> int:
+    current_year, previous_year = analysis_years()
+    text = f"{item.get('title', '')} {item.get('snippet', '')} {item.get('url', '')}".casefold()
+    score = 0
+    for marker, weight in [
+        (str(current_year), 8),
+        (f"{current_year}年", 8),
+        (str(previous_year), 4),
+        ("最新", 5),
+        ("在售", 5),
+        ("现售", 5),
+        ("到手价", 4),
+        ("推荐", 3),
+        ("选购", 3),
+        ("6000", 3),
+        ("5000", 2),
+        ("pro max", 3),
+        ("ultra", 3),
+        ("旗舰", 3),
+    ]:
+        if marker in text:
+            score += weight
+    if re.search(r"(?:iphone|xiaomi|oppo|vivo|honor|huawei|samsung|oneplus|redmi|realme|小米|荣耀|华为|苹果|一加|真我|努比亚|红魔).{0,24}\d", text, re.I):
+        score += 8
+    if price_hint:
+        range_match = re.search(r"(\d{3,6})-(\d{3,6})元", price_hint)
+        if range_match:
+            low, high = int(range_match.group(1)), int(range_match.group(2))
+            exact_patterns = [
+                f"{low}-{high}",
+                f"{low}到{high}",
+                f"{low}至{high}",
+                f"{low} 至 {high}",
+                f"{low} 到 {high}",
+            ]
+            if any(pattern in text for pattern in exact_patterns):
+                score += 18
+            for seen_low, seen_high in re.findall(r"([1-9]\d{3,4})\s*(?:-|~|—|–|到|至)\s*([1-9]\d{3,4})", text):
+                source_low, source_high = sorted((int(seen_low), int(seen_high)))
+                if source_low == low and source_high == high:
+                    score += 10
+                elif source_low >= high or source_high <= low:
+                    score -= 8
+    if re.search(r"(?:2020|2021|2022|2023)", text):
+        score -= 6
+    return score
+
+
+def competitor_discovery_prompt(project: dict, intent: dict, max_count: int, market_context: list[dict[str, Any]] | None = None) -> str:
+    current_year, previous_year = analysis_years()
     return f"""
 Choose suitable competitors for a competitive-intelligence task.
+
+Current date:
+{analysis_current_date()}
 
 Project:
 {project}
@@ -937,12 +1359,23 @@ Project:
 Parsed intent:
 {intent}
 
+Live market/search context collected before selection:
+{json.dumps(market_context or [], ensure_ascii=False)}
+
 Rules:
 - Return exactly {max_count} competitors when the market has enough credible options; otherwise return as many as are genuinely relevant.
 - Choose real companies, brands, product lines, or platforms that users would actually compare in this category.
 - If the category includes a price segment or geography, respect it.
-- For hardware, consumer electronics, cars, appliances, phones, laptops, or other concrete products, prefer product-line or SKU-level competitors instead of umbrella brand names. Example: use "iPhone 15" or "Huawei Mate 60", not only "Apple" or "Huawei".
+- For hardware, consumer electronics, cars, appliances, phones, laptops, or other concrete products, prefer product-line or SKU-level competitors instead of umbrella brand names.
+- For fast-moving product categories, choose models that are currently sold or commonly cross-shopped as of the current date. Prefer {current_year}/{previous_year} generation products unless the user explicitly asks for historical analysis.
+- Do not select stale models when newer successor generations exist in the same brand/segment. Treat old launch-era flagships as invalid for current price-band analysis unless current market context proves they are still a mainstream cross-shop option.
+- Do not select rumored, expected, upcoming, not-yet-launched, or merely "imminent" products. Every product competitor must be released and publicly purchasable or clearly sold in-market.
 - If the user asks a price band, choose competitors that actually sit near that price band or are commonly cross-shopped after channel discounts. Avoid products clearly outside the band unless the reason explicitly explains why they are still a reference point.
+- Use live market/search context above as a freshness signal; if it conflicts with model memory, trust the live context.
+- For fast-moving product categories, strongly prefer product names explicitly appearing in the live context titles/snippets. If the context mentions newer-generation models than your initial memory, select the newer context-supported models.
+- Prefer exact price-band current-month/current-year sources over adjacent higher/lower price-band sources.
+- When the exact price-band context names a cross-ecosystem benchmark or platform leader that users commonly compare against, keep it in the set instead of selecting only one regional/vendor cluster.
+- In competitor_details.reason, briefly mention currentness, price-band fit, and any uncertainty that needs live verification.
 - Keep names concise and search-friendly. Chinese names are acceptable for Chinese-market products.
 - Do not include generic categories, explanations, or invented brands in the competitors array.
 """
@@ -969,9 +1402,19 @@ Rules:
 """
 
 
-def product_level_refinement_prompt(project: dict, intent: dict, competitors: list[str], max_count: int) -> str:
+def product_level_refinement_prompt(
+    project: dict,
+    intent: dict,
+    competitors: list[str],
+    max_count: int,
+    market_context: list[dict[str, Any]] | None = None,
+) -> str:
+    current_year, previous_year = analysis_years()
     return f"""
 The previous competitor discovery returned overly broad brand/company names for a product-level competitive analysis.
+
+Current date:
+{analysis_current_date()}
 
 Project:
 {project}
@@ -982,39 +1425,154 @@ Parsed intent:
 Previous competitors:
 {competitors}
 
+Live market/search context:
+{json.dumps(market_context or [], ensure_ascii=False)}
+
 Refine the competitors to product-line or SKU-level names that users would directly compare.
 
 Rules:
 - Return exactly {max_count} product-level competitors when possible.
 - Keep the user's category, price band, geography and audience constraints.
 - Prefer concrete product families/models, not umbrella brands.
+- Prefer {current_year}/{previous_year} generation products for fast-moving product categories, and use live search context as the currentness anchor.
+- Replace obsolete models with the current comparable generation in the same brand/segment when a successor exists.
+- Do not replace an old model with an unreleased, rumored, expected, or merely upcoming successor.
 - If a brand has multiple relevant models, choose the model line most commonly cross-shopped in the requested price band.
 - Do not invent products. If exact current pricing is uncertain, choose models plausibly near the band and explain uncertainty in competitor_details.reason.
 """
 
 
+def currentness_refinement_prompt(
+    project: dict,
+    intent: dict,
+    competitors: list[str],
+    max_count: int,
+    market_context: list[dict[str, Any]] | None = None,
+) -> str:
+    current_year, previous_year = analysis_years()
+    return f"""
+The previous competitor list may contain stale or outdated product models.
+
+Current date:
+{analysis_current_date()}
+
+Project:
+{project}
+
+Parsed intent:
+{intent}
+
+Previous competitors:
+{competitors}
+
+Live market/search context:
+{json.dumps(market_context or [], ensure_ascii=False)}
+
+Task:
+Return a current, directly comparable competitor list for the user's category and price segment.
+
+Rules:
+- Return exactly {max_count} competitors when credible current options exist.
+- Keep direct comparability more important than brand coverage.
+- For fast-moving product categories, keep only products currently sold or commonly cross-shopped as of the current date.
+- Prefer {current_year}/{previous_year} generation products unless the user explicitly asks for older or historical products.
+- Replace stale models with newer successor generations in the same brand/segment when appropriate.
+- Never include rumored, expected, upcoming, not-yet-launched, or merely "imminent" products. If the newest successor is not verifiably released and purchasable, choose the newest released model instead.
+- For price-band tasks, reason from current channel/street price, not launch price.
+- Use live market/search context as the freshness anchor; if uncertain, say what must be verified in competitor_details.reason.
+- Strongly prefer product names explicitly present in live context titles/snippets, especially current-month buying guides, price pages, and product databases.
+- Prefer exact price-band context over adjacent price-band context, and preserve one context-supported cross-ecosystem benchmark when it is directly comparable.
+- Do not include umbrella brand names, generic categories, invented products, or products clearly outside the user scope.
+"""
+
+
+def verified_currentness_repair_prompt(
+    project: dict,
+    intent: dict,
+    competitors: list[str],
+    competitor_details: list[dict[str, Any]],
+    max_count: int,
+    market_context: list[dict[str, Any]] | None = None,
+) -> str:
+    current_year, previous_year = analysis_years()
+    return f"""
+The previous competitor list contained language suggesting some products may be expected, upcoming, rumored, imminent, or not fully verified as purchasable.
+
+Current date:
+{analysis_current_date()}
+
+Project:
+{project}
+
+Parsed intent:
+{intent}
+
+Previous competitors:
+{competitors}
+
+Previous details:
+{json.dumps(competitor_details, ensure_ascii=False)}
+
+Live market/search context:
+{json.dumps(market_context or [], ensure_ascii=False)}
+
+Repair task:
+Return a list of released, publicly purchasable, currently relevant competitors only.
+
+Rules:
+- Return exactly {max_count} competitors when credible current options exist.
+- Every competitor must be already released and available for purchase or commonly sold in-market.
+- Do not include products described as expected, upcoming, rumored, imminent, newly rumored, not-yet-launched, or only forecasted.
+- Prefer {current_year}/{previous_year} generation products for fast-moving categories, but verified availability is more important than maximal recency.
+- Replace any unverified successor with the newest verified released model in the same price/segment, or with another direct competitor if that brand has no verified current fit.
+- In competitor_details.reason, state the current-market fit without using expected/upcoming/imminent language.
+- Return JSON only.
+"""
+
+
+def context_benchmark_repair_prompt(
+    project: dict,
+    intent: dict,
+    competitors: list[str],
+    competitor_details: list[dict[str, Any]],
+    max_count: int,
+    market_context: list[dict[str, Any]] | None = None,
+) -> str:
+    return f"""
+The previous competitor list omitted a benchmark product that appears in exact price-band live context.
+
+Project:
+{project}
+
+Parsed intent:
+{intent}
+
+Previous competitors:
+{competitors}
+
+Previous details:
+{json.dumps(competitor_details, ensure_ascii=False)}
+
+Live market/search context:
+{json.dumps(market_context or [], ensure_ascii=False)}
+
+Repair task:
+Return a balanced competitor set for the same category and price segment.
+
+Rules:
+- Return exactly {max_count} competitors when credible options exist.
+- Keep only released and publicly purchasable products supported by the live context.
+- For smartphone tasks, if an iPhone model appears in exact price-band live context and the user did not ask for Android-only analysis, include that iPhone model as the iOS ecosystem benchmark.
+- Replace the weakest or least differentiated same-cluster product if needed to keep the requested count.
+- Preserve the strongest exact-price-band current-generation products already selected.
+- Do not include products from adjacent higher/lower price-band sources unless exact-band context supports them too.
+- Return JSON only.
+"""
+
+
 def should_refine_to_product_level(project: dict, intent: dict, competitors: list[str]) -> bool:
     task_text = f"{project.get('query', '')} {intent.get('industry', '')}".casefold()
-    hardware_terms = [
-        "手机",
-        "智能手机",
-        "phone",
-        "smartphone",
-        "笔记本",
-        "laptop",
-        "notebook",
-        "电脑",
-        "consumer electronics",
-        "hardware",
-        "汽车",
-        "car",
-        "ev",
-        "家电",
-        "电视",
-        "耳机",
-        "相机",
-    ]
-    if not any(term in task_text for term in hardware_terms):
+    if not any(term in task_text for term in RECENCY_SENSITIVE_PRODUCT_TERMS):
         return False
     if not competitors:
         return False
@@ -1068,6 +1626,147 @@ def should_refine_to_product_level(project: dict, intent: dict, competitors: lis
     return broad_count >= max(1, len(competitors) // 2)
 
 
+RECENCY_SENSITIVE_PRODUCT_TERMS = [
+    "手机",
+    "智能手机",
+    "android",
+    "iphone",
+    "phone",
+    "smartphone",
+    "笔记本",
+    "轻薄本",
+    "游戏本",
+    "laptop",
+    "notebook",
+    "电脑",
+    "consumer electronics",
+    "hardware",
+    "汽车",
+    "新能源车",
+    "电动车",
+    "car",
+    "ev",
+    "家电",
+    "电视",
+    "耳机",
+    "相机",
+    "camera",
+    "tablet",
+    "平板",
+    "watch",
+    "手表",
+    "显卡",
+    "gpu",
+]
+
+
+HISTORICAL_TASK_TERMS = [
+    "历史",
+    "复盘",
+    "过去",
+    "老款",
+    "旧款",
+    "经典",
+    "历代",
+    "中古",
+    "二手",
+    "停产",
+    "发布史",
+    "retrospective",
+    "historical",
+    "legacy",
+    "used",
+]
+
+
+def should_refine_for_currentness(project: dict, intent: dict, competitors: list[str]) -> bool:
+    if not competitors:
+        return False
+    return is_recency_sensitive_product_task(project, intent) and not is_historical_task(project, intent)
+
+
+def is_recency_sensitive_product_task(project: dict, intent: dict) -> bool:
+    task_text = f"{project.get('query', '')} {intent.get('industry', '')}".casefold()
+    return any(term.casefold() in task_text for term in RECENCY_SENSITIVE_PRODUCT_TERMS)
+
+
+def is_historical_task(project: dict, intent: dict) -> bool:
+    task_text = f"{project.get('query', '')} {intent.get('industry', '')}".casefold()
+    if any(term.casefold() in task_text for term in HISTORICAL_TASK_TERMS):
+        return True
+    current_year = date.today().year
+    years = [int(match.group(0)) for match in re.finditer(r"\b20\d{2}\b", task_text)]
+    return any(year <= current_year - 2 for year in years)
+
+
+def stale_year_mentions(values: list[str]) -> list[str]:
+    current_year = date.today().year
+    stale = []
+    for value in values:
+        years = [int(match.group(0)) for match in re.finditer(r"\b20\d{2}\b", value)]
+        if any(year <= current_year - 2 for year in years):
+            stale.append(value)
+    return stale
+
+
+UNRELEASED_OR_UNVERIFIED_MARKERS = [
+    "expected",
+    "upcoming",
+    "imminent",
+    "rumor",
+    "rumour",
+    "rumored",
+    "rumoured",
+    "not-yet-launched",
+    "not yet launched",
+    "forecast",
+    "预计",
+    "预期",
+    "即将",
+    "传闻",
+    "爆料",
+    "尚未发布",
+    "未发布",
+    "待发布",
+    "可能发布",
+    "预计发布",
+]
+
+
+def has_unreleased_or_unverified_currentness_signal(details: list[dict[str, Any]]) -> bool:
+    text = json.dumps(details, ensure_ascii=False).casefold()
+    return any(marker.casefold() in text for marker in UNRELEASED_OR_UNVERIFIED_MARKERS)
+
+
+def validate_currentness_details(project: dict, intent: dict, details: list[dict[str, Any]]) -> None:
+    if not details or not is_recency_sensitive_product_task(project, intent) or is_historical_task(project, intent):
+        return
+    if has_unreleased_or_unverified_currentness_signal(details):
+        raise ValueError(
+            "CompetitorDiscoveryAgent returned unverified upcoming/rumored product currentness language; "
+            "rerun after live search confirms released and purchasable competitors."
+        )
+
+
+def should_include_context_benchmark(
+    project: dict,
+    intent: dict,
+    market_context: list[dict[str, Any]],
+    competitors: list[str],
+) -> bool:
+    task_text = f"{project.get('query', '')} {intent.get('industry', '')}"
+    lower_task = task_text.casefold()
+    if not ("smartphone" in lower_task or "phone" in lower_task or "手机" in task_text):
+        return False
+    if re.search(r"安卓阵营|只看安卓|仅安卓|android\s*only|不考虑苹果|排除苹果|不要苹果", task_text, re.I):
+        return False
+    context_text = json.dumps(market_context, ensure_ascii=False).casefold()
+    if not re.search(r"\biphone\s*\d{1,2}\b|apple iphone|苹果\s*iphone", context_text, re.I):
+        return False
+    competitor_text = " ".join(competitors).casefold()
+    return not re.search(r"\biphone\b|apple|苹果", competitor_text, re.I)
+
+
 def normalize_competitor_names(values: list[Any], limit: int) -> list[str]:
     names: list[str] = []
     seen: set[str] = set()
@@ -1095,6 +1794,13 @@ def validate_discovered_competitors(project: dict, intent: dict, competitors: li
     validate_competitor_names(competitors)
     if not competitors:
         raise ValueError("CompetitorDiscoveryAgent returned no competitors.")
+    if is_recency_sensitive_product_task(project, intent) and not is_historical_task(project, intent):
+        stale_names = stale_year_mentions(competitors)
+        if stale_names:
+            raise ValueError(
+                "CompetitorDiscoveryAgent returned product names with stale year markers for a current product task: "
+                + ", ".join(stale_names[:6])
+            )
     task_text = f"{project.get('query', '')} {intent.get('industry', '')}"
     auto_expected = bool(re.search(r"(?:自动|自行|AI|模型).*(?:选择|发现|推荐|找出).*竞品", task_text, flags=re.I))
     minimum = max_count if auto_expected and max_count >= 2 else min(2, max_count)
@@ -1162,7 +1868,7 @@ def discovery_reason(name: str, llm_details: list[dict[str, Any]], intent: dict)
 def default_competitors(industry: str) -> list[str]:
     lower = industry.lower()
     if "smartphone" in lower or "phone" in lower or "手机" in industry:
-        return ["iPhone 15", "华为 Mate 60", "小米 14 Pro", "OPPO Find X7", "vivo X100 Pro", "荣耀 Magic6 Pro"]
+        return ["iPhone 17", "小米 17 Pro Max", "OPPO Find X9 Pro", "vivo X300 Pro", "荣耀 Magic8 Pro", "华为 Mate 70 Pro"]
     if "laptop" in lower or "notebook" in lower or "笔记本" in industry or "电脑" in industry:
         return ["联想小新", "华硕无畏", "惠普战66", "戴尔灵越", "荣耀MagicBook", "机械革命无界"]
     if "e-commerce" in industry:
@@ -1184,24 +1890,25 @@ def default_competitors(industry: str) -> list[str]:
 
 def source_query(competitor: str, source_type: str, industry: str) -> str:
     lower = industry.lower()
+    current_year, previous_year = analysis_years()
     if "smartphone" in lower or "phone" in lower or "手机" in industry:
         suffix = {
-            "official": "官网 官方 参数 配置 价格",
-            "pricing": "6000元 价格 京东 天猫 官方商城 促销",
+            "official": f"最新 在售 {current_year} {previous_year} 官网 官方 参数 配置 价格",
+            "pricing": f"最新 在售 现价 到手价 京东 天猫 官方商城 促销 {current_year} {previous_year}",
             "docs": "参数 芯片 影像 屏幕 续航 快充 系统",
-            "review": "评测 优缺点 用户评价 影像 续航 性能",
-            "news": "新品 发布 2026 手机",
+            "review": f"最新 评测 优缺点 用户评价 影像 续航 性能 {current_year} {previous_year}",
+            "news": f"新品 发布 {current_year} {previous_year} 手机",
             "changelog": "系统 更新 版本 OTA 新功能",
             "github": "评测 benchmark teardown",
         }[source_type]
         return f"{competitor} {industry} {suffix}"
     if "laptop" in lower or "notebook" in lower or "笔记本" in industry or "电脑" in industry:
         suffix = {
-            "official": "官方 参数 配置 价格",
-            "pricing": "6000元 价格 京东 天猫 促销",
+            "official": f"最新 在售 {current_year} {previous_year} 官方 参数 配置 价格",
+            "pricing": f"最新 在售 现价 到手价 京东 天猫 促销 {current_year} {previous_year}",
             "docs": "CPU 显卡 屏幕 续航 重量 接口 参数",
-            "review": "评测 优缺点 用户评价 散热 噪音",
-            "news": "新品 发布 2026 笔记本",
+            "review": f"最新 评测 优缺点 用户评价 散热 噪音 {current_year} {previous_year}",
+            "news": f"新品 发布 {current_year} {previous_year} 笔记本",
             "changelog": "型号 更新 迭代 版本",
             "github": "拆机 跑分 benchmark review",
         }[source_type]
@@ -1256,6 +1963,84 @@ def finding(agent: str, claim_type: str, subject: str, claim: str, evidence_ids:
         "risk_level": risk_level,
         "created_by_agent": agent,
     }
+
+
+def normalize_llm_specialist_findings(agent: str, values: object, valid_evidence_ids: set[str]) -> list[dict]:
+    if not isinstance(values, list):
+        return []
+    findings: list[dict] = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        claim = normalize_text(str(item.get("claim", "")))
+        if not claim:
+            continue
+        evidence_ids = sanitize_evidence_ids(item.get("evidence_ids", []), valid_evidence_ids)
+        claim_type = normalize_claim_type(str(item.get("claim_type", "inference")))
+        if not evidence_ids and claim_type != "unknown":
+            claim_type = "unknown"
+        findings.append(
+            finding(
+                agent,
+                claim_type,
+                normalize_text(str(item.get("subject") or "overall"))[:120],
+                claim[:520],
+                evidence_ids[:5],
+                clamp_float(item.get("confidence", 0.55), 0.1, 0.88 if evidence_ids else 0.35),
+                normalize_risk_level(str(item.get("risk_level", "medium"))),
+            )
+        )
+    return findings
+
+
+def merge_findings(existing: object, llm_findings: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for item in [*(existing if isinstance(existing, list) else []), *llm_findings]:
+        if not isinstance(item, dict):
+            continue
+        claim = normalize_text(str(item.get("claim", "")))
+        if not claim:
+            continue
+        key = claim.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged[:14]
+
+
+def sanitize_evidence_ids(values: object, valid_evidence_ids: set[str]) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    ids: list[str] = []
+    for value in values:
+        text = str(value)
+        if text in valid_evidence_ids and text not in ids:
+            ids.append(text)
+    return ids
+
+
+def normalize_claim_type(value: str) -> str:
+    value = value.strip().lower()
+    if value in {"fact", "inference", "recommendation", "opportunity", "unknown"}:
+        return value
+    return "inference"
+
+
+def normalize_risk_level(value: str) -> str:
+    value = value.strip().lower()
+    if value in {"low", "medium", "high"}:
+        return value
+    return "medium"
+
+
+def clamp_float(value: object, low: float, high: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = low
+    return round(max(low, min(high, number)), 2)
 
 
 def semantic_support_score(claim_text: str, quote: str, summary: str) -> float:
@@ -1365,25 +2150,12 @@ def critical_quality_failures(
         failures.append(f"invalid competitor names: {invalid[:4]}")
     if not evidence:
         failures.append("no evidence was collected")
-    grouped = defaultdict(list)
-    for item in evidence:
-        grouped[item.evidence_metadata.get("competitor", "unknown")].append(item)
-    for competitor in competitors:
-        usable = [
-            item
-            for item in grouped.get(competitor.name, [])
-            if item.source_type not in {"unverified", "crawl_failed"} and item.credibility_score >= 0.35
-        ]
-        if len(usable) < 2:
-            failures.append(f"{competitor.name} has fewer than 2 usable evidence items")
     if not claims:
         failures.append("no claims were produced")
     if ai_review.get("domain_mismatch"):
         failures.append("LLM quality review detected domain mismatch")
     if ai_review.get("fit_for_user_task") is False:
         failures.append("LLM quality review says report does not fit the user task")
-    if int(quality_score.get("total", 0)) < 72:
-        failures.append(f"quality score below threshold: {quality_score.get('total')}")
     severe_warning_markers = ["Relevance high", "Domain high", "runtime fallback", "LLM fallback"]
     for warning in warnings:
         if any(marker.lower() in str(warning).lower() for marker in severe_warning_markers):

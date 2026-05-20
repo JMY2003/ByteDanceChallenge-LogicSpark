@@ -66,9 +66,18 @@ class LLMService:
         if self._supports_thinking_toggle():
             payload["thinking"] = {"type": "disabled"}
         data = await self._post_chat_completions(payload)
+        content = data["choices"][0]["message"]["content"]
+        if not content or not str(content).strip():
+            reasoning = data["choices"][0]["message"].get("reasoning_content", "")
+            if reasoning:
+                raise ValueError("LLM returned reasoning_content but empty content. Disable thinking or increase max_tokens.")
         usage = data.get("usage") or {}
         input_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
         output_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+        if not input_tokens:
+            input_tokens = max(1, len(json.dumps(payload.get("messages", []), ensure_ascii=False)) // 4)
+        if not output_tokens:
+            output_tokens = max(1, len(str(content)) // 4)
         total_tokens = int(usage.get("total_tokens") or 0) or input_tokens + output_tokens
         self.last_usage = {
             "input_tokens": input_tokens,
@@ -76,11 +85,6 @@ class LLMService:
             "total_tokens": total_tokens,
         }
         self.last_cost_estimate = 0.0
-        content = data["choices"][0]["message"]["content"]
-        if not content or not str(content).strip():
-            reasoning = data["choices"][0]["message"].get("reasoning_content", "")
-            if reasoning:
-                raise ValueError("LLM returned reasoning_content but empty content. Disable thinking or increase max_tokens.")
         return parse_json_object(content)
 
     async def _post_chat_completions(self, payload: dict[str, Any]) -> dict[str, Any]:

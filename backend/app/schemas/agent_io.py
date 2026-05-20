@@ -79,6 +79,7 @@ class ExtractionOutput(StrictBaseModel):
 
 class EvidenceBuilderOutput(StrictBaseModel):
     evidence: list[dict]
+    coverage_repairs: list[dict] = Field(default_factory=list)
 
 
 class AnalysisOutput(StrictBaseModel):

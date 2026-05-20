@@ -1,4 +1,5 @@
 import { CreateProjectForm } from "@/components/CreateProjectForm";
+import { MiraBrand } from "@/components/ui/MiraBrand";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { getProjectHistory } from "@/lib/api";
 import type { ProjectHistoryItem } from "@/types/api";
@@ -20,20 +21,16 @@ export default async function HomePage() {
   return (
     <main className="app-page">
       <div className="shell-wide">
-        <header className="mb-6 max-w-5xl pt-4">
-          <div className="eyebrow">CompeteScope AI</div>
-          <h1 className="mt-3 max-w-5xl text-4xl font-semibold tracking-normal text-ink md:text-5xl">AI 驱动竞品分析 Agent 协作系统</h1>
-          <p className="mt-4 page-subtitle">
-            从任务理解、信息源规划、公开资料采集、Schema 抽取、多维竞品分析、证据链、红队审查到可导出报告，完整模拟一个数字调研小组。
+        <header className="mx-auto mb-6 max-w-5xl text-center">
+          <MiraBrand />
+          <h1 className="mt-2 text-4xl font-semibold tracking-normal text-ink md:text-5xl">竞品分析Multi-Agent系统--首页</h1>
+          <p className="mx-auto mt-3 max-w-4xl text-balance page-subtitle">
+            mira 是一个多 Agent 市场情报研究架构，从任务理解、信息源规划、公开资料采集、Schema 抽取、多维竞品分析、证据链、红队审查到可导出报告，完整模拟一个数字调研小组。
           </p>
         </header>
-        <section className="mb-6 grid gap-3 md:grid-cols-3">
-          <Capability tone="blue" icon={<GitBranch size={18} />} title="智能 DAG 编排" text="任务拆解、竞品发现、采集、分析、质检、报告写作" />
-          <Capability tone="green" icon={<ShieldCheck size={18} />} title="证据优先" text="事实、推断、建议全部绑定 evidence_ids" />
-          <Capability tone="amber" icon={<Activity size={18} />} title="可观测" text="Agent 输入输出、工具调用、质量门禁可追踪" />
-        </section>
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.75fr)] lg:items-stretch">
           <section className="surface-glass home-task-panel p-5 md:p-6 lg:min-h-[745px]">
+            <ResearchCockpit />
             <CreateProjectForm />
           </section>
           <ProjectHistoryPanel history={history} />
@@ -43,31 +40,33 @@ export default async function HomePage() {
   );
 }
 
-const capabilityTone = {
-  blue: {
-    card: "border-[#bad7ff] bg-[#eef6ff]",
-    icon: "bg-white/80 text-[#0066cc] ring-[#bad7ff]"
-  },
-  green: {
-    card: "border-[#b7e2d5] bg-[#edf9f5]",
-    icon: "bg-white/80 text-[#0a7f62] ring-[#b7e2d5]"
-  },
-  amber: {
-    card: "border-[#f2d7a5] bg-[#fff7e8]",
-    icon: "bg-white/80 text-[#b56200] ring-[#f2d7a5]"
-  }
-};
+const heroSteps: Array<{ icon: ReactNode; label: string; text: string; tone: string }> = [
+  { icon: <GitBranch size={17} />, label: "DAG", text: "任务规划、公开资料采集与自动分析", tone: "bg-[#eef6ff] text-signal ring-[#bad7ff]" },
+  { icon: <ShieldCheck size={17} />, label: "Evidence", text: "证据链、引用来源与可信度约束", tone: "bg-[#edf9f5] text-[#0a7f62] ring-[#b7e2d5]" },
+  { icon: <Activity size={17} />, label: "Review", text: "红队审查、质量门禁与运行观测", tone: "bg-[#fff7e8] text-[#b56200] ring-[#f2d7a5]" }
+];
 
-function Capability({ icon, title, text, tone }: { icon: ReactNode; title: string; text: string; tone: keyof typeof capabilityTone }) {
-  const classes = capabilityTone[tone];
+function ResearchCockpit() {
   return (
-    <div className={`rounded-lg border p-4 shadow-hairline ${classes.card}`}>
-      <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-ink">
-        <span className={`inline-flex h-8 w-8 items-center justify-center rounded-full ring-1 ${classes.icon}`}>{icon}</span>
-        {title}
+    <aside className="mb-6 rounded-lg border border-white/80 bg-white/70 p-4 shadow-hairline backdrop-blur">
+      <div className="mb-3">
+        <div>
+          <div className="eyebrow">Research Cockpit</div>
+          <h2 className="mt-1 text-base font-semibold tracking-normal text-ink">从问题到报告的调研链路</h2>
+        </div>
       </div>
-      <p className="text-sm leading-6 text-steel">{text}</p>
-    </div>
+      <div className="grid gap-3 md:grid-cols-3">
+        {heroSteps.map((step) => (
+          <div key={step.label} className="flex min-h-[88px] items-start gap-3 rounded-lg border border-white/80 bg-white/85 p-3 shadow-hairline">
+            <span className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full ring-1 ${step.tone}`}>{step.icon}</span>
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-ink">{step.label}</div>
+              <div className="mt-1 text-xs leading-5 text-steel">{step.text}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </aside>
   );
 }
 

@@ -10,12 +10,12 @@
 }
 
 html {
-  background: #f5f5f7;
+  background: #f6f8fb;
 }
 
 body {
   margin: 0;
-  background: #f5f5f7;
+  background: #f6f8fb;
   color: #1d1d1f;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -41,7 +41,10 @@ select {
 @layer components {
   .app-page {
     @apply min-h-screen bg-panel px-4 py-5 text-ink sm:px-6 lg:px-8;
-    background: linear-gradient(180deg, #f7f9fc 0%, #f5f7fb 46%, #f8f6f1 100%);
+    background-color: #f6f8fb;
+    background-image:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(246, 250, 255, 0.86) 34%, rgba(249, 247, 242, 0.9) 100%),
+      linear-gradient(90deg, rgba(0, 113, 227, 0.05), rgba(255, 128, 112, 0.04) 48%, rgba(10, 127, 98, 0.05));
   }
 
   .shell-wide {
@@ -53,25 +56,30 @@ select {
   }
 
   .surface {
-    @apply rounded-lg border border-line bg-white;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    @apply rounded-lg border border-white/80 bg-white/90 backdrop-blur-sm;
+    box-shadow: 0 18px 42px rgba(36, 49, 70, 0.07), 0 1px 2px rgba(36, 49, 70, 0.05);
   }
 
   .surface-glass {
-    @apply rounded-lg border border-white/70 bg-white/85 shadow-soft backdrop-blur-xl;
+    @apply rounded-lg border border-white/80 bg-white/80 shadow-soft backdrop-blur-xl;
+    box-shadow: 0 22px 54px rgba(36, 49, 70, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.8);
   }
 
   .home-task-panel {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(247, 251, 255, 0.88) 100%);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(244, 249, 255, 0.88) 100%),
+      linear-gradient(90deg, rgba(0, 113, 227, 0.08), transparent 42%);
   }
 
   .home-history-panel {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 250, 241, 0.84) 100%);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 249, 239, 0.86) 100%),
+      linear-gradient(90deg, rgba(255, 149, 0, 0.08), transparent 48%);
   }
 
   .surface-muted {
-    @apply rounded-lg border border-line bg-white/65;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    @apply rounded-lg border border-white/80 bg-white/65 backdrop-blur-sm;
+    box-shadow: 0 12px 30px rgba(36, 49, 70, 0.05), 0 1px 2px rgba(36, 49, 70, 0.04);
   }
 
   .eyebrow {
@@ -80,6 +88,7 @@ select {
 
   .page-title {
     @apply text-3xl font-semibold tracking-normal text-ink md:text-4xl;
+    line-height: 1.08;
   }
 
   .page-subtitle {
@@ -87,16 +96,18 @@ select {
   }
 
   .btn {
-    @apply inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-signal hover:text-signal disabled:cursor-not-allowed disabled:opacity-60;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    @apply inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-white/80 bg-white/90 px-3 text-sm font-medium text-ink transition hover:border-signal/40 hover:bg-white hover:text-signal disabled:cursor-not-allowed disabled:opacity-60;
+    box-shadow: 0 10px 22px rgba(36, 49, 70, 0.05), 0 1px 2px rgba(36, 49, 70, 0.05);
   }
 
   .btn-primary {
     @apply border-transparent bg-signal px-4 font-semibold text-white hover:border-transparent hover:bg-[#0066cc] hover:text-white;
+    box-shadow: 0 14px 30px rgba(0, 113, 227, 0.24), 0 1px 2px rgba(0, 64, 128, 0.12);
   }
 
   .btn-dark {
     @apply border-transparent bg-ink px-4 font-semibold text-white hover:border-transparent hover:bg-signal hover:text-white;
+    box-shadow: 0 14px 30px rgba(29, 29, 31, 0.16), 0 1px 2px rgba(29, 29, 31, 0.12);
   }
 
   .field-label {
@@ -104,18 +115,28 @@ select {
   }
 
   .field-control {
-    @apply w-full rounded-lg border border-line bg-white px-3 text-sm text-ink outline-none transition placeholder:text-steel/70 focus:border-signal focus:ring-4 focus:ring-signal/15;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    @apply w-full rounded-lg border border-white/80 bg-white/90 px-3 text-sm text-ink outline-none transition placeholder:text-steel/70 focus:border-signal focus:bg-white focus:ring-4 focus:ring-signal/15;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 8px 20px rgba(36, 49, 70, 0.04);
   }
 
   .quiet-card {
-    @apply rounded-lg border border-line bg-white p-4;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    @apply rounded-lg border border-white/80 bg-white/80 p-4 backdrop-blur-sm;
+    box-shadow: 0 12px 28px rgba(36, 49, 70, 0.05), 0 1px 2px rgba(36, 49, 70, 0.04);
+  }
+
+  .project-header-card {
+    @apply rounded-lg border border-white/80 bg-white/75 p-5 backdrop-blur-xl;
+    box-shadow: 0 22px 54px rgba(36, 49, 70, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  }
+
+  .control-panel {
+    @apply rounded-lg border border-white/80 bg-white/70 p-3 backdrop-blur-xl;
+    box-shadow: 0 14px 34px rgba(36, 49, 70, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.82);
   }
 }
 
 .shadow-hairline {
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 1px 2px rgba(36, 49, 70, 0.05);
 }
 
 .soft-scrollbar {

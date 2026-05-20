@@ -1,4 +1,5 @@
 import { Database } from "lucide-react";
+import { MiraBrand } from "@/components/ui/MiraBrand";
 import { ProjectNav } from "@/components/ui/ProjectNav";
 import { getCompetitors } from "@/lib/api";
 
@@ -12,7 +13,8 @@ export default async function KnowledgePage({ params }: PageProps) {
   return (
     <main className="app-page">
       <div className="shell-wide space-y-5">
-        <header className="flex flex-wrap items-start justify-between gap-4">
+        <MiraBrand />
+        <header className="project-header-card flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-normal text-signal">
               <Database size={16} />

@@ -16,7 +16,6 @@ from app.agents.specialized_agents import (
     CitationCheckAgent,
     CompetitorDiscoveryAgent,
     ConsistencyCheckAgent,
-    DocumentCleanerAgent,
     FactCheckAgent,
     FeatureMatrixAgent,
     GTMAgent,
@@ -40,7 +39,6 @@ def build_agent_registry() -> dict[str, BaseAgent]:
         SourcePlanningAgent(),
         WebSearchAgent(),
         WebCrawlerAgent(),
-        DocumentCleanerAgent(),
         SchemaExtractionAgent(),
         EvidenceBuilderAgent(),
         AnalysisAgent(),
@@ -61,4 +59,3 @@ def build_agent_registry() -> dict[str, BaseAgent]:
         QualityGateAgent(),
     ]
     return {agent.name: agent for agent in agents}
-

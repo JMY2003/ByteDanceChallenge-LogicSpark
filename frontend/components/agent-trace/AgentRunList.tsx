@@ -10,22 +10,22 @@ export function AgentRunList({ runs }: { runs: AgentRun[] }) {
       {runs.map((run) => {
         const fallbackWarning = getFallbackWarning(run);
         return (
-        <article key={run.id} className="surface p-4">
+        <article key={run.id} className="surface-muted p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <div className="font-semibold text-ink">{run.agent_name}</div>
               <div className="mt-1 text-xs text-steel">{run.id}</div>
             </div>
             <div className="flex items-center gap-3 text-sm text-steel">
-              <span className="inline-flex items-center gap-1">
+              <span className="inline-flex items-center gap-1 rounded-full bg-white/80 px-2 py-1 shadow-hairline">
                 <TerminalSquare size={15} />
                 {run.status}
               </span>
-              <span className="inline-flex items-center gap-1">
+              <span className="inline-flex items-center gap-1 rounded-full bg-white/80 px-2 py-1 shadow-hairline">
                 <Clock size={15} />
                 {run.duration_ms}ms
               </span>
-              <span className="inline-flex items-center gap-1">
+              <span className="inline-flex items-center gap-1 rounded-full bg-white/80 px-2 py-1 shadow-hairline">
                 <Wrench size={15} />
                 {run.tool_calls.length}
               </span>
@@ -41,12 +41,12 @@ export function AgentRunList({ runs }: { runs: AgentRun[] }) {
           <details className="mt-3">
             <summary className="cursor-pointer text-sm font-medium text-signal">查看输入输出</summary>
             <div className="mt-3 grid gap-3 lg:grid-cols-2">
-              <pre className="max-h-72 overflow-auto rounded-lg bg-panel p-3 text-xs">{JSON.stringify(run.input, null, 2)}</pre>
-              <pre className="max-h-72 overflow-auto rounded-lg bg-panel p-3 text-xs">{JSON.stringify(run.output, null, 2)}</pre>
+              <pre className="max-h-72 overflow-auto rounded-lg bg-white/80 p-3 text-xs shadow-hairline">{JSON.stringify(run.input, null, 2)}</pre>
+              <pre className="max-h-72 overflow-auto rounded-lg bg-white/80 p-3 text-xs shadow-hairline">{JSON.stringify(run.output, null, 2)}</pre>
             </div>
           </details>
           {run.tool_calls.length ? (
-            <details className="mt-3 rounded-lg bg-panel p-3">
+            <details className="mt-3 rounded-lg bg-white/70 p-3 shadow-hairline">
               <summary className="cursor-pointer text-xs font-semibold uppercase tracking-normal text-steel">
                 Tool Calls ({run.tool_calls.length})
               </summary>

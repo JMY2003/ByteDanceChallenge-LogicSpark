@@ -52,29 +52,28 @@ const workflowLayout: Record<string, LayoutSpec> = {
   web_search: { x: 242, y: 234, source: Position.Bottom, target: Position.Top },
   web_crawler: { x: 242, y: 396, source: Position.Right, target: Position.Top },
 
-  document_cleaner: { x: 456, y: 72, source: Position.Bottom, target: Position.Left },
-  schema_extraction: { x: 456, y: 234, source: Position.Bottom, target: Position.Top },
-  evidence_builder: { x: 456, y: 396, source: Position.Right, target: Position.Top },
+  schema_extraction: { x: 456, y: 150, source: Position.Bottom, target: Position.Left },
+  evidence_builder: { x: 456, y: 330, source: Position.Right, target: Position.Top },
 
-  product_positioning: { x: 610, y: 18 },
-  feature_matrix: { x: 610, y: 116 },
-  pricing_analysis: { x: 610, y: 214 },
-  user_voice: { x: 610, y: 312 },
-  technology_intelligence: { x: 610, y: 410 },
-  gtm: { x: 610, y: 508 },
+  product_positioning: { x: 650, y: 24, source: Position.Right, target: Position.Left },
+  feature_matrix: { x: 650, y: 106, source: Position.Right, target: Position.Left },
+  pricing_analysis: { x: 650, y: 188, source: Position.Right, target: Position.Left },
+  user_voice: { x: 650, y: 270, source: Position.Right, target: Position.Left },
+  technology_intelligence: { x: 650, y: 352, source: Position.Right, target: Position.Left },
+  gtm: { x: 650, y: 434, source: Position.Right, target: Position.Left },
 
-  swot: { x: 814, y: 116, source: Position.Bottom, target: Position.Left },
-  strategic_insight: { x: 814, y: 286, source: Position.Bottom, target: Position.Top },
-  analysis: { x: 700, y: 234, source: Position.Right, target: Position.Left },
+  swot: { x: 860, y: 170, source: Position.Bottom, target: Position.Left },
+  strategic_insight: { x: 860, y: 312, source: Position.Right, target: Position.Top },
+  analysis: { x: 1060, y: 242, source: Position.Right, target: Position.Left },
 
-  fact_check: { x: 1010, y: 50 },
-  citation_check: { x: 1010, y: 160 },
-  consistency_check: { x: 1010, y: 270 },
-  bias_detection: { x: 1010, y: 380 },
-  red_team: { x: 1010, y: 490 },
+  fact_check: { x: 1260, y: 44, source: Position.Right, target: Position.Left },
+  citation_check: { x: 1260, y: 144, source: Position.Right, target: Position.Left },
+  consistency_check: { x: 1260, y: 244, source: Position.Right, target: Position.Left },
+  bias_detection: { x: 1260, y: 344, source: Position.Right, target: Position.Left },
+  red_team: { x: 1260, y: 444, source: Position.Right, target: Position.Left },
 
-  quality_gate: { x: 914, y: 234, source: Position.Right, target: Position.Left },
-  report_writer: { x: 1128, y: 234, source: Position.Right, target: Position.Left }
+  quality_gate: { x: 1460, y: 242, source: Position.Right, target: Position.Left },
+  report_writer: { x: 1660, y: 242, source: Position.Right, target: Position.Left }
 };
 
 export function DAGFlow({ dag }: { dag: DagResponse }) {
@@ -137,9 +136,9 @@ export function DAGFlow({ dag }: { dag: DagResponse }) {
         width: nodeWidth,
         border: `1px solid ${statusColor[node.status] ?? "#d2d2d7"}`,
         borderRadius: 8,
-        background: "white",
+        background: "linear-gradient(180deg, rgba(255,255,255,0.96), rgba(247,250,255,0.92))",
         padding: 10,
-        boxShadow: "0 8px 24px rgba(0,0,0,0.06)"
+        boxShadow: "0 14px 30px rgba(36,49,70,0.08)"
       }
     }));
   }, [dag]);
@@ -157,20 +156,26 @@ export function DAGFlow({ dag }: { dag: DagResponse }) {
   }, [dag]);
 
   return (
-    <div className="surface h-[590px] overflow-hidden">
+    <div className="surface h-[620px] overflow-hidden bg-white/70">
       <ReactFlow
         nodes={nodes}
         edges={edges}
         fitView
-        fitViewOptions={{ padding: 0.04, maxZoom: 1 }}
+        fitViewOptions={{ padding: 0.03, maxZoom: 0.95 }}
         minZoom={0.25}
         maxZoom={1.4}
         nodesConnectable={false}
         nodesDraggable={false}
+        panOnDrag={false}
+        panOnScroll={false}
+        preventScrolling={false}
+        zoomOnDoubleClick={false}
+        zoomOnPinch={false}
+        zoomOnScroll={false}
         proOptions={{ hideAttribution: false }}
       >
         <AutoFit fitKey={fitKey} />
-        <Background color="#d2d2d7" gap={20} />
+        <Background color="#c7d4e5" gap={20} />
         <Controls position="bottom-left" />
       </ReactFlow>
     </div>
@@ -186,7 +191,7 @@ function AutoFit({ fitKey }: { fitKey: string }) {
     let timeout: number | undefined;
     const frame = window.requestAnimationFrame(() => {
       timeout = window.setTimeout(() => {
-        void fitView({ padding: 0.04, maxZoom: 1, duration: 250 });
+        void fitView({ padding: 0.03, maxZoom: 0.95, duration: 250 });
       }, 60);
     });
     return () => {

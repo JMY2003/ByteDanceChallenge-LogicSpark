@@ -17,9 +17,9 @@ export function QualityPanel({ score }: { score: QualityScore }) {
       <div className="flex items-end justify-between gap-4">
         <div>
           <div className="text-xs font-semibold uppercase tracking-normal text-steel">Quality Gate</div>
-          <div className="mt-2 text-4xl font-semibold text-ink">{score.total}</div>
+          <div className="mt-2 text-5xl font-semibold tracking-normal text-ink">{score.total}</div>
         </div>
-        <div className="text-sm text-steel">/ 100</div>
+        <div className="rounded-full bg-signal/10 px-3 py-1 text-sm font-semibold text-signal">/ 100</div>
       </div>
       <div className="mt-5 space-y-3">
         {rows.map(([key, label, max]) => {
@@ -32,8 +32,11 @@ export function QualityPanel({ score }: { score: QualityScore }) {
                   {value}/{max}
                 </span>
               </div>
-              <div className="h-2 overflow-hidden rounded-full bg-panel">
-                <div className="h-full rounded-full bg-signal" style={{ width: `${Math.min(100, (value / max) * 100)}%` }} />
+              <div className="h-2.5 overflow-hidden rounded-full bg-[#eef3f8]">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-signal to-[#38bdf8]"
+                  style={{ width: `${Math.min(100, (value / max) * 100)}%` }}
+                />
               </div>
             </div>
           );

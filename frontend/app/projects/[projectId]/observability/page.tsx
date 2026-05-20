@@ -2,6 +2,7 @@ import { Activity } from "lucide-react";
 import { DurationChart } from "@/components/agent-trace/DurationChart";
 import { AgentRunList } from "@/components/agent-trace/AgentRunList";
 import { MetricCard } from "@/components/ui/MetricCard";
+import { MiraBrand } from "@/components/ui/MiraBrand";
 import { ProjectNav } from "@/components/ui/ProjectNav";
 import { getAgentRuns, getEvidence, getProjectStatus } from "@/lib/api";
 
@@ -18,7 +19,8 @@ export default async function ObservabilityPage({ params }: PageProps) {
   return (
     <main className="app-page">
       <div className="shell-wide space-y-5">
-        <header className="flex flex-wrap items-start justify-between gap-4">
+        <MiraBrand />
+        <header className="project-header-card flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-normal text-signal">
               <Activity size={16} />

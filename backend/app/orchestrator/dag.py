@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.agents.mvp_agents import MVP_TASKS
+from app.agents.mvp_agents import build_mvp_tasks
 
 
 @dataclass(frozen=True)
@@ -15,7 +15,7 @@ class DAGNodeSpec:
     human_review_required: bool = False
 
 
-def mvp_dag(default_retries: int = 2) -> list[DAGNodeSpec]:
+def mvp_dag(default_retries: int = 2, enable_deep_review: bool = True) -> list[DAGNodeSpec]:
     return [
         DAGNodeSpec(
             id=item["id"],
@@ -24,7 +24,7 @@ def mvp_dag(default_retries: int = 2) -> list[DAGNodeSpec]:
             priority=int(item.get("priority", 1)),
             max_retries=default_retries,
         )
-        for item in MVP_TASKS
+        for item in build_mvp_tasks(enable_deep_review)
     ]
 
 
@@ -51,4 +51,3 @@ def validate_dag(nodes: list[DAGNodeSpec]) -> None:
 
     for node in nodes:
         visit(node.id)
-

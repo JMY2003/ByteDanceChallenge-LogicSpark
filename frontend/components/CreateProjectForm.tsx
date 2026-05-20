@@ -132,17 +132,20 @@ export function CreateProjectForm() {
   }
 
   return (
-    <form onSubmit={onSubmit} className="space-y-5">
+    <form onSubmit={onSubmit} className="space-y-6">
       <div>
-        <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
-          <label className="block text-sm font-semibold text-ink">任务输入</label>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <label className="block text-base font-semibold text-ink">任务输入</label>
+            <p className="mt-1 text-sm text-steel">选择竞品来源，MIRA 会生成可追溯的分析任务。</p>
+          </div>
           <div className="flex flex-wrap gap-2">
             {examples.map((example) => (
               <button
                 key={example.label}
                 type="button"
                 onClick={() => applyExample(example)}
-                className="btn h-8 px-2 text-xs text-steel"
+                className="btn h-9 rounded-full px-3 text-xs text-steel"
               >
                 <Wand2 size={13} />
                 {example.label}
@@ -150,7 +153,7 @@ export function CreateProjectForm() {
             ))}
           </div>
         </div>
-        <div className="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-3 sm:grid-cols-2">
           <button
             type="button"
             onClick={() => setInputMode("specified")}
@@ -241,8 +244,11 @@ export function CreateProjectForm() {
         />
       </label>
 
-      <div className="rounded-lg border border-dashed border-line bg-white/70 p-3 text-sm leading-6 text-steel">
-        <div className="mb-1 font-semibold text-ink">任务预览</div>
+      <div className="rounded-lg border border-signal/15 bg-gradient-to-br from-white via-[#f6fbff] to-[#fff8ef] p-4 text-sm leading-6 text-steel shadow-hairline">
+        <div className="mb-1 flex items-center gap-2 font-semibold text-ink">
+          <Sparkles size={15} className="text-signal" />
+          任务预览
+        </div>
         {generatedPreview}
       </div>
 
@@ -264,19 +270,26 @@ export function CreateProjectForm() {
             <option value="en-US">English</option>
           </select>
         </label>
-        <label className="flex items-center justify-between gap-3 rounded-lg border border-line bg-white px-3 py-2 text-sm shadow-hairline">
-          <span className="font-medium text-ink">启用深度审查</span>
-          <input className="h-5 w-5 accent-signal" type="checkbox" checked={deepReview} onChange={(event) => setDeepReview(event.target.checked)} />
+        <label className="block text-sm">
+          <span className="field-label">深度审查</span>
+          <select
+            value={deepReview ? "enabled" : "disabled"}
+            onChange={(event) => setDeepReview(event.target.value === "enabled")}
+            className="field-control h-11"
+          >
+            <option value="enabled">启用</option>
+            <option value="disabled">不启用</option>
+          </select>
         </label>
       </div>
       {error ? <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm leading-6 text-danger">{error}</div> : null}
       <button
         type="submit"
         disabled={isSubmitting}
-        className="btn btn-primary h-11 px-5"
+        className="btn btn-primary h-12 w-full px-6 sm:w-auto"
       >
         {isSubmitting ? <Sparkles size={18} className="animate-pulse" /> : <Play size={18} />}
-        {isSubmitting ? "Agent 正在运行" : "创建并运行"}
+        {isSubmitting ? "Agent 正在运行" : "创建并运行 DAG"}
       </button>
     </form>
   );
@@ -382,7 +395,7 @@ function padCompetitorInputs(values: string[]) {
 
 function inputModeButtonClass(active: boolean) {
   return [
-    "inline-flex h-11 items-center justify-center gap-2 rounded-lg border px-3 text-sm font-semibold shadow-hairline transition",
-    active ? "border-signal bg-signal/10 text-signal" : "border-line bg-white text-steel hover:border-signal hover:text-signal"
+    "inline-flex h-12 items-center justify-center gap-2 rounded-lg border px-4 text-sm font-semibold shadow-hairline transition",
+    active ? "border-transparent bg-signal text-white" : "border-white/80 bg-white/90 text-steel hover:border-signal/35 hover:bg-white hover:text-signal"
   ].join(" ");
 }

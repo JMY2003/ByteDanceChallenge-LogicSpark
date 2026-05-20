@@ -16,6 +16,14 @@ if TEST_DB.exists():
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.agents.specialized_agents import (
+    competitor_discovery_prompt,
+    extract_price_segment_hint,
+    has_unreleased_or_unverified_currentness_signal,
+    market_discovery_query,
+    should_include_context_benchmark,
+    should_refine_for_currentness,
+)
 
 
 def test_mvp_query_to_markdown_report_flow() -> None:
@@ -72,7 +80,10 @@ def test_mvp_query_to_markdown_report_flow() -> None:
 
         runs = client.get(f"/api/projects/{project_id}/agent-runs")
         assert runs.status_code == 200
-        assert len(runs.json()) >= 12
+        agent_names = {run["agent_name"] for run in runs.json()}
+        assert len(runs.json()) >= 11
+        assert "DocumentCleanerAgent" not in agent_names
+        assert "EvidenceBuilderAgent" in agent_names
 
 
 def test_ecommerce_query_uses_domain_competitors_and_deep_report_sections() -> None:
@@ -160,3 +171,48 @@ def test_unknown_competitors_do_not_get_overconfident_quality_score() -> None:
         gate = report["json_report"]["agent_outputs"]["quality_gate"]["payload"]["quality_gate"]
         assert gate["status"] == "needs_revision"
         assert report["quality_score"]["total"] < 70
+
+
+def test_auto_discovery_prompt_requires_current_products() -> None:
+    project = {
+        "query": "任务模式：AI发现竞品。品类：6000元价位档手机。竞品数量：5。其他说明：关注影像、续航、性能。",
+        "max_competitors": 5,
+    }
+    intent = {"industry": "smartphone / consumer electronics", "target_companies": []}
+    prompt = competitor_discovery_prompt(
+        project,
+        intent,
+        5,
+        [{"title": "2026 手机选购", "snippet": "6000元价位最新旗舰手机对比", "url": "https://example.com"}],
+    )
+
+    assert "Current date" in prompt
+    assert "currently sold" in prompt
+    assert "Do not select stale models" in prompt
+    assert "Do not select rumored" in prompt
+    assert "Live market/search context" in prompt
+    assert should_refine_for_currentness(project, intent, ["华为 Mate 60 Pro", "小米 14 Pro"])
+    discovery_query = market_discovery_query(project, intent)
+    assert "2026年" in discovery_query
+    assert "5000-6000元" in discovery_query
+    assert "最新在售" in discovery_query
+    assert extract_price_segment_hint(project["query"]) == "5000-6000元 6000元价位"
+    assert has_unreleased_or_unverified_currentness_signal(
+        [{"name": "Example X", "reason": "expected current generation, launch imminent"}]
+    )
+    assert should_include_context_benchmark(
+        project,
+        intent,
+        [{"title": "5000-6000元手机推荐", "snippet": "小米17 Pro Max、OPPO Find X9 Pro、Apple iPhone 17 等"}],
+        ["小米17 Pro Max", "OPPO Find X9 Pro", "vivo X300 Pro", "荣耀Magic8 Pro", "华为Mate70"],
+    )
+
+
+def test_historical_product_tasks_do_not_force_currentness() -> None:
+    project = {
+        "query": "请复盘 2023 年旗舰手机竞争格局，包括当年的代表机型。",
+        "max_competitors": 5,
+    }
+    intent = {"industry": "smartphone / consumer electronics", "target_companies": []}
+
+    assert not should_refine_for_currentness(project, intent, ["华为 Mate 60 Pro", "小米 14 Pro"])

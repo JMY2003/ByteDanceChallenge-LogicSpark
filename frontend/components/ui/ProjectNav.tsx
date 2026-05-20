@@ -17,7 +17,7 @@ const nav: Array<{ href: string; label: string; icon: LucideIcon; absolute?: boo
 export function ProjectNav({ projectId }: { projectId: string }) {
   const pathname = usePathname();
   return (
-    <nav className="flex flex-wrap gap-2 rounded-lg border border-line bg-white/75 p-1 shadow-hairline backdrop-blur-xl">
+    <nav className="soft-scrollbar flex max-w-full gap-1 overflow-x-auto rounded-lg border border-white/80 bg-white/75 p-1 shadow-hairline backdrop-blur-xl">
       {nav.map((item) => {
         const Icon = item.icon;
         const href = item.absolute ? item.href : `/projects/${projectId}${item.href}`;
@@ -27,8 +27,8 @@ export function ProjectNav({ projectId }: { projectId: string }) {
             key={item.label}
             href={href}
             className={clsx(
-              "inline-flex h-9 items-center gap-2 rounded-lg px-3 text-sm font-medium transition",
-              active ? "bg-white text-signal shadow-hairline" : "text-ink hover:bg-white hover:text-signal"
+              "inline-flex h-10 shrink-0 items-center gap-2 rounded-lg px-3 text-sm font-medium transition",
+              active ? "bg-signal text-white shadow-hairline" : "text-ink hover:bg-white hover:text-signal"
             )}
           >
             <Icon size={16} />

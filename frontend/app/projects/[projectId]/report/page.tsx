@@ -5,6 +5,7 @@ import { InsightRail } from "@/components/report/InsightRail";
 import { QualityPanel } from "@/components/report/QualityPanel";
 import { ReportViewer } from "@/components/report/ReportViewer";
 import { SourceMixChart } from "@/components/report/SourceMixChart";
+import { MiraBrand } from "@/components/ui/MiraBrand";
 import { ProjectNav } from "@/components/ui/ProjectNav";
 import { getReport } from "@/lib/api";
 
@@ -17,8 +18,11 @@ export default async function ReportPage({ params }: PageProps) {
   const report = await getReport(projectId);
   return (
     <main className="app-page">
-      <div className="shell-readable space-y-5">
-        <header className="flex flex-wrap items-start justify-between gap-4">
+      <div className="shell-wide mb-5">
+        <MiraBrand />
+      </div>
+      <div className="shell-wide mb-5">
+        <header className="project-header-card flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-normal text-signal">
               <FileText size={16} />
@@ -28,6 +32,8 @@ export default async function ReportPage({ params }: PageProps) {
           </div>
           <ProjectNav projectId={projectId} />
         </header>
+      </div>
+      <div className="shell-wide space-y-5">
         <FallbackWarningBanner report={report.json_report} />
         <section className="grid gap-5 xl:grid-cols-[1fr_320px]">
           <div>

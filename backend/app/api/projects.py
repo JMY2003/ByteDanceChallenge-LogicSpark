@@ -13,6 +13,7 @@ from app.core.time import utc_now
 from app.db.models import AgentRun, Competitor, Evidence, Project, Report, Task
 from app.db.session import get_db
 from app.orchestrator.executor import DAGOrchestrator, ensure_project_tasks
+from app.orchestrator.dag import mvp_dag
 from app.schemas.competitor import CompetitorListResponse
 from app.schemas.evidence import EvidenceItem, EvidenceListResponse
 from app.schemas.project import (
@@ -106,7 +107,7 @@ def get_project_status(project_id: str, db: Session = Depends(get_db)) -> dict:
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    ensure_project_tasks(db, project)
+    ensure_project_tasks(db, project, create_missing=project.status != "completed")
     return DAGOrchestrator(db).project_status(project_id)
 
 
@@ -115,7 +116,11 @@ def get_project_dag(project_id: str, db: Session = Depends(get_db)) -> DAGRespon
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    tasks = ensure_project_tasks(db, project)
+    tasks = ensure_project_tasks(db, project, create_missing=project.status != "completed")
+    dag_order = {
+        node.id: index
+        for index, node in enumerate(mvp_dag(enable_deep_review=project.enable_deep_review))
+    }
     intent_task = next((task for task in tasks if task.node_id == "intent"), None)
     needs_competitor_confirmation = bool((intent_task.output or {}).get("needs_competitor_confirmation")) if intent_task else False
     nodes = [
@@ -129,7 +134,7 @@ def get_project_dag(project_id: str, db: Session = Depends(get_db)) -> DAGRespon
             max_retries=task.max_retries,
             human_review_required=task.node_id == "web_search" and needs_competitor_confirmation,
         )
-        for task in sorted(tasks, key=lambda item: item.created_at)
+        for task in sorted(tasks, key=lambda item: dag_order.get(item.node_id, 999))
     ]
     edges = [
         DAGEdge(id=f"{dependency}->{task.node_id}", source=dependency, target=task.node_id)

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 from collections import Counter
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.agents.base import AgentContext, compact_for_storage
@@ -21,17 +21,26 @@ def task_id_for(project_id: str, node_id: str) -> str:
     return stable_id("task", project_id, node_id)
 
 
-def ensure_project_tasks(db: Session, project: Project) -> list[Task]:
+def ensure_project_tasks(db: Session, project: Project, create_missing: bool = True) -> list[Task]:
     settings = get_settings()
-    nodes = mvp_dag(settings.task_default_retries)
+    nodes = mvp_dag(settings.task_default_retries, enable_deep_review=project.enable_deep_review)
     validate_dag(nodes)
     existing = {task.node_id: task for task in db.scalars(select(Task).where(Task.project_id == project.id)).all()}
+    active_node_ids = {node.id for node in nodes}
+    for node_id, task in existing.items():
+        if node_id not in active_node_ids and task.status != "skipped":
+            task.status = "skipped"
+            task.error = "Skipped because this node is no longer part of the active DAG."
+            task.ended_at = utc_now()
     tasks = []
     for node in nodes:
-        task = existing.get(node.id)
+        task_id = task_id_for(project.id, node.id)
+        task = existing.get(node.id) or db.get(Task, task_id)
         if not task:
+            if not create_missing:
+                continue
             task = Task(
-                id=task_id_for(project.id, node.id),
+                id=task_id,
                 project_id=project.id,
                 node_id=node.id,
                 agent_name=node.agent_name,
@@ -40,8 +49,17 @@ def ensure_project_tasks(db: Session, project: Project) -> list[Task]:
                 max_retries=node.max_retries,
             )
             db.add(task)
+        else:
+            task.agent_name = node.agent_name
+            task.depends_on = node.depends_on
+            task.max_retries = node.max_retries
         tasks.append(task)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        refreshed = {task.node_id: task for task in db.scalars(select(Task).where(Task.project_id == project.id)).all()}
+        tasks = [refreshed[node.id] for node in nodes if node.id in refreshed]
     return tasks
 
 
@@ -80,6 +98,10 @@ class DAGOrchestrator:
         project.updated_at = utc_now()
         self.db.commit()
 
+        task_order = {
+            node.id: index
+            for index, node in enumerate(mvp_dag(self.config.task_default_retries, enable_deep_review=project.enable_deep_review))
+        }
         tasks = self.db.scalars(select(Task).where(Task.project_id == project_id)).all()
         task_by_node = {task.node_id: task for task in tasks}
         memory: dict[str, dict] = {
@@ -112,7 +134,8 @@ class DAGOrchestrator:
                 self.db.commit()
                 break
 
-            await asyncio.gather(*(self._run_task(project, task, memory) for task in ready))
+            for task in sorted(ready, key=lambda item: task_order.get(item.node_id, 999)):
+                await self._run_task(project, task, memory)
             task_by_node = {task.node_id: task for task in self.db.scalars(select(Task).where(Task.project_id == project_id)).all()}
             if any(task.status == "failed" and task.retry_count > task.max_retries for task in task_by_node.values()):
                 project.status = "failed"

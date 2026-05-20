@@ -31,7 +31,7 @@ export function ReportViewer({ projectId, markdown }: { projectId: string; markd
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap gap-2">
+      <div className="control-panel flex flex-wrap gap-2">
         <button
           onClick={() => setIsEditing((value) => !value)}
           className="btn"
